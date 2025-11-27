@@ -13,10 +13,7 @@ const QRCodeGenerator = () => {
   const [typingTimeout, setTypingTimeout] = useState(null);
   const [isScanning, setIsScanning] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [cameraSupported, setCameraSupported] = useState(true); // Assume true initially
-  const [cameras, setCameras] = useState([]);
-  const [selectedCamera, setSelectedCamera] = useState('');
-  const [isLoadingCameras, setIsLoadingCameras] = useState(false);
+  const [cameraSupported, setCameraSupported] = useState(true);
   
   const searchInputRef = useRef(null);
   const resultsContainerRef = useRef(null);
@@ -27,6 +24,10 @@ const QRCodeGenerator = () => {
   const captureIntervalRef = useRef(null);
   const fileInputRef = useRef(null);
 
+  // Use refs for state that shouldn't trigger re-renders
+  const camerasRef = useRef([]);
+  const selectedCameraRef = useRef('');
+
   // Initialize areas data with type information
   const [areas, setAreas] = useState({
     STAGING_AREA: [],
@@ -35,38 +36,25 @@ const QRCodeGenerator = () => {
     OTHER_AREA: []
   });
 
-  // Enhanced camera support detection
+  // Check camera support on component mount
   useEffect(() => {
     const checkCameraSupport = async () => {
       try {
-        // Check basic media devices support
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
           setCameraSupported(false);
-          setError('Camera API not supported in this browser');
           return;
         }
 
-        // Check if we're in a secure context
         const isSecure = window.location.protocol === 'https:' || 
                         window.location.hostname === 'localhost' || 
                         window.location.hostname === '127.0.0.1';
         
         if (!isSecure) {
-          setError('Camera access requires HTTPS or localhost. Current protocol: ' + window.location.protocol);
           setCameraSupported(false);
           return;
         }
 
-        // Test camera access with a simple permission request
-        try {
-          const testStream = await navigator.mediaDevices.getUserMedia({ video: true });
-          testStream.getTracks().forEach(track => track.stop());
-          setCameraSupported(true);
-        } catch (testError) {
-          setCameraSupported(false);
-          console.warn('Camera test failed:', testError);
-        }
-
+        setCameraSupported(true);
       } catch (err) {
         console.error('Camera support check failed:', err);
         setCameraSupported(false);
@@ -75,35 +63,6 @@ const QRCodeGenerator = () => {
 
     checkCameraSupport();
   }, []);
-
-  // Get available cameras
-  const getCameras = async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      return [];
-    }
-
-    try {
-      setIsLoadingCameras(true);
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      
-      const camerasList = videoDevices.map(device => ({
-        deviceId: device.deviceId,
-        label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
-      }));
-      
-      setCameras(camerasList);
-      if (camerasList.length > 0 && !selectedCamera) {
-        setSelectedCamera(camerasList[0].deviceId);
-      }
-      return camerasList;
-    } catch (err) {
-      console.error('Error getting cameras:', err);
-      return [];
-    } finally {
-      setIsLoadingCameras(false);
-    }
-  };
 
   // Quick Links Dropdown Component
   const QuickLinksDropdown = () => {
@@ -395,517 +354,646 @@ const QRCodeGenerator = () => {
     }
   };
 
-  // Enhanced Text Scanner Component
-const TextScanner = () => {
-  const [availableCameras, setAvailableCameras] = useState([]);
-  const [selectedCamera, setSelectedCamera] = useState('');
-  const [isLoadingCameras, setIsLoadingCameras] = useState(false);
-  const [hasCameraPermission, setHasCameraPermission] = useState(false);
+  // Text Scanner Component
+  const TextScanner = () => {
+    const [isLoadingCameras, setIsLoadingCameras] = useState(false);
+    const [availableCameras, setAvailableCameras] = useState([]);
+    const [selectedCamera, setSelectedCamera] = useState('');
 
-  // Get available cameras with better detection
-  const getCameras = async () => {
-    if (!navigator.mediaDevices?.enumerateDevices) {
-      return [];
-    }
-
-    try {
-      setIsLoadingCameras(true);
-      const devices = await navigator.mediaDevices.enumerateDevices();
-      const videoDevices = devices.filter(device => device.kind === 'videoinput');
-      
-      console.log('Found cameras:', videoDevices);
-      
-      const camerasList = videoDevices.map(device => ({
-        deviceId: device.deviceId,
-        label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
-      }));
-      
-      setAvailableCameras(camerasList);
-      if (camerasList.length > 0 && !selectedCamera) {
-        setSelectedCamera(camerasList[0].deviceId);
-      }
-      return camerasList;
-    } catch (err) {
-      console.error('Error getting cameras:', err);
-      return [];
-    } finally {
-      setIsLoadingCameras(false);
-    }
-  };
-
-  // Refresh cameras after permission is granted
-  const refreshCameras = async () => {
-    // First try to get permission by accessing camera
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-      
-      // Stop the test stream immediately
-      stream.getTracks().forEach(track => track.stop());
-      
-      setHasCameraPermission(true);
-      
-      // Now enumerate devices again - they should have labels now
-      await getCameras();
-    } catch (err) {
-      console.error('Cannot access camera:', err);
-      setHasCameraPermission(false);
-    }
-  };
-
-  const startCamera = async () => {
-    try {
-      setError(null);
-      
-      // If no cameras detected, try to refresh the list
-      if (availableCameras.length === 0) {
-        await refreshCameras();
+    // Get available cameras
+    const getCameras = async () => {
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        return [];
       }
 
-      // If still no cameras, try direct access
-      if (availableCameras.length === 0) {
-        console.log('No cameras in list, trying direct access...');
-        await startCameraDirect();
-        return;
-      }
-
-      const constraints = {
-        video: {
-          deviceId: selectedCamera ? { exact: selectedCamera } : undefined,
-          width: { ideal: 1920 },
-          height: { ideal: 1080 }
-        } 
-      };
-
-      console.log('Starting camera with constraints:', constraints);
-      
-      const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play().catch(err => {
-            console.error('Error playing video:', err);
-          });
-        };
-      }
-      
-      setIsScanning(true);
-      
-      // Start capturing frames for OCR
-      startOCRCapturing();
-    } catch (err) {
-      console.error('Camera error:', err);
-      let errorMessage = 'Cannot access camera: ';
-      
-      if (err.name === 'NotAllowedError') {
-        errorMessage = 'Camera permission denied. Please allow camera access and refresh the page.';
-      } else if (err.name === 'NotFoundError') {
-        errorMessage = 'No camera found. Trying alternative method...';
-        // Try direct access as fallback
-        await startCameraDirect();
-        return;
-      } else if (err.name === 'NotSupportedError') {
-        errorMessage = 'Camera not supported in this browser.';
-      } else if (err.name === 'NotReadableError') {
-        errorMessage = 'Camera is already in use.';
-      } else if (err.name === 'OverconstrainedError') {
-        errorMessage = 'Cannot find camera with requested settings. Trying default...';
-        await startCameraDirect();
-        return;
-      } else {
-        errorMessage += err.message;
-      }
-      
-      setError(errorMessage);
-      setIsScanning(false);
-    }
-  };
-
-  // Direct camera access without device selection
-  const startCameraDirect = async () => {
-    try {
-      console.log('Attempting direct camera access...');
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        video: { 
-          width: { ideal: 1280 },
-          height: { ideal: 720 }
-        } 
-      });
-      
-      streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => {
-          videoRef.current.play().catch(err => {
-            console.error('Error playing video:', err);
-          });
-        };
-      }
-      
-      setIsScanning(true);
-      setError(null);
-      
-      // Update camera list now that we have permission
-      await getCameras();
-      
-      startOCRCapturing();
-    } catch (err) {
-      console.error('Direct camera access failed:', err);
-      setError('Cannot access camera directly: ' + err.message);
-      setIsScanning(false);
-    }
-  };
-
-  const stopCamera = () => {
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => {
-        track.stop();
-      });
-      streamRef.current = null;
-    }
-    if (captureIntervalRef.current) {
-      clearInterval(captureIntervalRef.current);
-      captureIntervalRef.current = null;
-    }
-    setIsScanning(false);
-    setIsProcessing(false);
-  };
-
-  const startOCRCapturing = () => {
-    captureIntervalRef.current = setInterval(() => {
-      if (videoRef.current && videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA && !isProcessing) {
-        captureAndProcessFrame();
-      }
-    }, 3000);
-  };
-
-  const captureAndProcessFrame = async () => {
-    const video = videoRef.current;
-    const canvas = canvasRef.current;
-    
-    if (!video || !canvas) return;
-
-    setIsProcessing(true);
-    
-    try {
-      const context = canvas.getContext('2d');
-      canvas.width = video.videoWidth;
-      canvas.height = video.videoHeight;
-      context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const { data: { text } } = await Tesseract.recognize(
-        canvas,
-        'eng',
-        { 
-          logger: m => console.log(m),
-          tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
-        }
-      );
-
-      console.log('OCR Result:', text);
-      
-      if (text && text.trim()) {
-        const processedText = processOCRText(text);
-        if (processedText) {
-          handleScannedText(processedText);
-        }
-      }
-    } catch (err) {
-      console.error('OCR processing error:', err);
-    } finally {
-      setIsProcessing(false);
-    }
-  };
-
-  const processOCRText = (text) => {
-    let cleanedText = text.trim()
-      .replace(/\s+/g, ' ')
-      .toUpperCase();
-    
-    console.log('Cleaned OCR Text:', cleanedText);
-    
-    const patterns = [
-      /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
-      /([A-Z])(\d+)\s+(\d+)([A-Z])/,
-      /([A-Z])-(\d+)\.(\d+)([A-Z])/,
-      /([A-Z])(\d+)(\d+)([A-Z])/
-    ];
-    
-    for (const pattern of patterns) {
-      const match = cleanedText.match(pattern);
-      if (match) {
-        const [, letter, firstNum, secondNum, endingLetter] = match;
-        return `${letter}-${firstNum}.${secondNum}${endingLetter}`;
-      }
-    }
-    
-    const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?/;
-    const locationMatch = cleanedText.match(locationPattern);
-    if (locationMatch) {
-      return locationMatch[0];
-    }
-    
-    return null;
-  };
-
-  const handleScannedText = (scannedText) => {
-    console.log('Processed scanned text:', scannedText);
-    setSearchTerm(scannedText);
-    stopCamera();
-    
-    setTimeout(() => {
-      handleSearchFromScan(scannedText);
-    }, 100);
-  };
-
-  const handleSearchFromScan = (scannedText) => {
-    setError(null);
-    const formattedInputs = formatInput(scannedText);
-    const newResults = [];
-
-    formattedInputs.forEach(input => {
-      const result = findReferenceId(input);
-      if (result) {
-        newResults.push({
-          location: input,
-          referenceId: result.referenceID,
-          type: result.type
-        });
-      }
-    });
-
-    if (newResults.length === 0) {
-      setError(`No matching locations found for: ${scannedText}`);
-      return;
-    }
-
-    setResults(newResults);
-    setError(null);
-    
-    setTimeout(() => {
-      if (resultsContainerRef.current) {
-        resultsContainerRef.current.scrollIntoView({ behavior: 'smooth' });
-      }
-    }, 100);
-  };
-
-  const captureManual = () => {
-    if (!isScanning || isProcessing) return;
-    captureAndProcessFrame();
-  };
-
-  const handleImageUpload = (event) => {
-    const file = event.target.files[0];
-    if (!file) return;
-
-    const reader = new FileReader();
-    reader.onload = async (e) => {
-      setIsProcessing(true);
       try {
-        const image = new Image();
-        image.onload = async () => {
-          try {
-            const canvas = canvasRef.current;
-            const context = canvas.getContext('2d');
-            canvas.width = image.width;
-            canvas.height = image.height;
-            context.drawImage(image, 0, 0);
-
-            const { data: { text } } = await Tesseract.recognize(
-              canvas,
-              'eng',
-              { 
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
-              }
-            );
-
-            console.log('Uploaded Image OCR Result:', text);
-            
-            if (text && text.trim()) {
-              const processedText = processOCRText(text);
-              if (processedText) {
-                setSearchTerm(processedText);
-                handleSearchFromScan(processedText);
-              } else {
-                setError('No location text found in the image. Please try another image.');
-              }
-            } else {
-              setError('No text found in the image. Please try another image.');
-            }
-          } catch (err) {
-            console.error('OCR processing error:', err);
-            setError('Error processing image: ' + err.message);
-          } finally {
-            setIsProcessing(false);
-          }
-        };
-        image.src = e.target.result;
+        setIsLoadingCameras(true);
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        
+        console.log('Found cameras:', videoDevices);
+        
+        const camerasList = videoDevices.map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
+        }));
+        
+        setAvailableCameras(camerasList);
+        camerasRef.current = camerasList;
+        
+        if (camerasList.length > 0 && !selectedCamera) {
+          setSelectedCamera(camerasList[0].deviceId);
+          selectedCameraRef.current = camerasList[0].deviceId;
+        }
+        return camerasList;
       } catch (err) {
-        console.error('Image loading error:', err);
-        setError('Error loading image: ' + err.message);
+        console.error('Error getting cameras:', err);
+        return [];
+      } finally {
+        setIsLoadingCameras(false);
+      }
+    };
+
+    const startCamera = async () => {
+      try {
+        setError(null);
+        setIsLoadingCameras(true);
+
+        console.log('Starting camera...');
+        
+        // Stop any existing camera first
+        if (streamRef.current) {
+          console.log('Stopping existing camera...');
+          stopCamera();
+          // Wait a bit for camera to fully release
+          await new Promise(resolve => setTimeout(resolve, 500));
+        }
+
+        // Simple constraints
+        const constraints = {
+          video: {
+            width: { ideal: 1280 },
+            height: { ideal: 720 }
+          } 
+        };
+
+        // If we have a specific camera selected, use it
+        const currentSelectedCamera = selectedCamera || selectedCameraRef.current;
+        if (currentSelectedCamera && availableCameras.length > 0) {
+          constraints.video.deviceId = { exact: currentSelectedCamera };
+        }
+
+        console.log('Camera constraints:', constraints);
+
+        // Get the stream
+        const stream = await navigator.mediaDevices.getUserMedia(constraints);
+        
+        console.log('Camera stream obtained:', stream);
+        console.log('Stream active:', stream.active);
+        console.log('Stream tracks:', stream.getTracks().map(t => ({kind: t.kind, readyState: t.readyState})));
+        
+        // Store the stream reference IMMEDIATELY
+        streamRef.current = stream;
+        
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          
+          // Set up event listeners for the video element
+          const onLoaded = () => {
+            console.log('Video metadata loaded, playing...');
+            videoRef.current.play().then(() => {
+              console.log('Video playing successfully');
+              console.log('Video readyState:', videoRef.current.readyState);
+              console.log('Video dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
+              
+              setIsScanning(true);
+              setIsLoadingCameras(false);
+              
+              // Start OCR capturing after video is playing
+              startOCRCapturing();
+            }).catch(err => {
+              console.error('Error playing video:', err);
+              setError('Error starting camera: ' + err.message);
+              setIsLoadingCameras(false);
+              stopCamera();
+            });
+          };
+
+          const onError = (err) => {
+            console.error('Video error:', err);
+            setError('Camera error: ' + err);
+            setIsLoadingCameras(false);
+            stopCamera();
+          };
+
+          videoRef.current.onloadedmetadata = onLoaded;
+          videoRef.current.onerror = onError;
+
+          // If already loaded, trigger manually
+          if (videoRef.current.readyState >= 1) {
+            onLoaded();
+          }
+        } else {
+          // If no video element, still proceed
+          setIsScanning(true);
+          setIsLoadingCameras(false);
+          startOCRCapturing();
+        }
+        
+      } catch (err) {
+        console.error('Camera start error:', err);
+        setIsLoadingCameras(false);
+        
+        let errorMessage = 'Cannot access camera: ';
+        
+        if (err.name === 'NotAllowedError') {
+          errorMessage = 'Camera permission denied. Please allow camera access in your browser settings.';
+        } else if (err.name === 'NotFoundError') {
+          errorMessage = 'No camera found on this device.';
+        } else if (err.name === 'NotSupportedError') {
+          errorMessage = 'Camera not supported in this browser.';
+        } else if (err.name === 'NotReadableError') {
+          errorMessage = 'Camera is already in use by another application.';
+        } else if (err.name === 'OverconstrainedError') {
+          errorMessage = 'Camera constraints cannot be met. Trying default settings...';
+          // Try again with no constraints
+          setTimeout(() => startCameraWithDefault(), 100);
+          return;
+        } else {
+          errorMessage += err.message;
+        }
+        
+        setError(errorMessage);
+      }
+    };
+
+    // Fallback with minimal constraints
+    const startCameraWithDefault = async () => {
+      try {
+        console.log('Trying camera with default constraints...');
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        
+        streamRef.current = stream;
+        if (videoRef.current) {
+          videoRef.current.srcObject = stream;
+          videoRef.current.onloadedmetadata = () => {
+            videoRef.current.play().then(() => {
+              setIsScanning(true);
+              startOCRCapturing();
+            });
+          };
+        }
+      } catch (err) {
+        console.error('Default camera failed:', err);
+        setError('Cannot access camera even with default settings: ' + err.message);
+      }
+    };
+
+    const stopCamera = () => {
+      console.log('Stopping camera...');
+      
+      if (streamRef.current) {
+        const tracks = streamRef.current.getTracks();
+        console.log('Stopping tracks:', tracks);
+        
+        tracks.forEach(track => {
+          console.log('Stopping track:', track.kind, 'state:', track.readyState);
+          track.stop();
+        });
+        streamRef.current = null;
+      }
+      
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+      
+      setIsScanning(false);
+      setIsProcessing(false);
+      
+      // Clear video element
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+        // Remove event listeners
+        videoRef.current.onloadedmetadata = null;
+        videoRef.current.onerror = null;
+      }
+      
+      console.log('Camera stopped');
+    };
+
+    const startOCRCapturing = () => {
+      console.log('Starting OCR capturing...');
+      
+      // Clear any existing interval
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+      }
+      
+      captureIntervalRef.current = setInterval(() => {
+        const currentStream = streamRef.current;
+        const video = videoRef.current;
+        
+        if (!currentStream || !video) {
+          return;
+        }
+        
+        // Check if stream is still active
+        if (!currentStream.active) {
+          console.log('Stream is not active, stopping camera');
+          stopCamera();
+          return;
+        }
+        
+        // Check if video is ready
+        if (video.readyState === video.HAVE_ENOUGH_DATA && !isProcessing) {
+          captureAndProcessFrame();
+        }
+      }, 3000);
+    };
+
+    const captureAndProcessFrame = async () => {
+      const video = videoRef.current;
+      const canvas = canvasRef.current;
+      const currentStream = streamRef.current;
+      
+      if (!video || !canvas || !currentStream) {
+        console.log('Skipping frame capture - video, canvas, or stream not ready');
+        return;
+      }
+
+      // Check if video stream is still active
+      if (!currentStream.active) {
+        console.log('Stream not active, stopping camera');
+        stopCamera();
+        return;
+      }
+
+      const activeTracks = currentStream.getTracks().filter(track => track.readyState === 'live');
+      if (activeTracks.length === 0) {
+        console.log('No active video tracks, stopping camera');
+        stopCamera();
+        return;
+      }
+
+      // Check if video has valid dimensions
+      if (video.videoWidth === 0 || video.videoHeight === 0) {
+        console.log('Video has zero dimensions, skipping capture');
+        return;
+      }
+
+      setIsProcessing(true);
+      
+      try {
+        console.log('Capturing frame for OCR...');
+        
+        const context = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        console.log('Processing OCR...');
+        const { data: { text } } = await Tesseract.recognize(
+          canvas,
+          'eng',
+          { 
+            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
+          }
+        );
+
+        console.log('OCR Result:', text);
+        
+        if (text && text.trim()) {
+          const processedText = processOCRText(text);
+          if (processedText) {
+            console.log('Found location:', processedText);
+            handleScannedText(processedText);
+          }
+        }
+      } catch (err) {
+        console.error('OCR processing error:', err);
+        setError('OCR processing failed: ' + err.message);
+      } finally {
         setIsProcessing(false);
       }
     };
-    reader.readAsDataURL(file);
-    event.target.value = '';
-  };
 
-  const switchCamera = async (deviceId) => {
-    setSelectedCamera(deviceId);
-    if (isScanning) {
-      stopCamera();
-      setTimeout(() => startCamera(), 500);
-    }
-  };
-
-  // Load cameras on component mount
-  useEffect(() => {
-    getCameras();
-  }, []);
-
-  useEffect(() => {
-    return () => {
-      stopCamera();
+    const processOCRText = (text) => {
+      let cleanedText = text.trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+      
+      const patterns = [
+        /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
+        /([A-Z])(\d+)\s+(\d+)([A-Z])/,
+        /([A-Z])-(\d+)\.(\d+)([A-Z])/,
+        /([A-Z])(\d+)(\d+)([A-Z])/
+      ];
+      
+      for (const pattern of patterns) {
+        const match = cleanedText.match(pattern);
+        if (match) {
+          const [, letter, firstNum, secondNum, endingLetter] = match;
+          return `${letter}-${firstNum}.${secondNum}${endingLetter}`;
+        }
+      }
+      
+      const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?/;
+      const locationMatch = cleanedText.match(locationPattern);
+      if (locationMatch) {
+        return locationMatch[0];
+      }
+      
+      return null;
     };
-  }, []);
 
-  return (
-    <div className="text-scanner">
-      {!isScanning ? (
-        <div className="scan-options">
-          {cameraSupported ? (
-            <>
-              <div className="camera-selection">
-                <label htmlFor="camera-select">Select Camera:</label>
-                <select 
-                  id="camera-select"
-                  value={selectedCamera}
-                  onChange={(e) => switchCamera(e.target.value)}
+    const handleScannedText = (scannedText) => {
+      console.log('Processed scanned text:', scannedText);
+      setSearchTerm(scannedText);
+      
+      // Auto-search but keep camera running
+      setTimeout(() => {
+        handleSearchFromScan(scannedText);
+      }, 100);
+    };
+
+    const handleSearchFromScan = (scannedText) => {
+      setError(null);
+      const formattedInputs = formatInput(scannedText);
+      const newResults = [];
+
+      formattedInputs.forEach(input => {
+        const result = findReferenceId(input);
+        if (result) {
+          newResults.push({
+            location: input,
+            referenceId: result.referenceID,
+            type: result.type
+          });
+        }
+      });
+
+      if (newResults.length === 0) {
+        setError(`No matching locations found for: ${scannedText}`);
+        return;
+      }
+
+      setResults(newResults);
+      setError(null);
+    };
+
+    const captureManual = () => {
+      if (!isScanning || isProcessing || !streamRef.current) {
+        console.log('Cannot capture - scanning:', isScanning, 'processing:', isProcessing, 'stream:', !!streamRef.current);
+        return;
+      }
+      console.log('Manual capture triggered');
+      captureAndProcessFrame();
+    };
+
+    const handleImageUpload = (event) => {
+      const file = event.target.files[0];
+      if (!file) {
+        console.log('No file selected');
+        return;
+      }
+
+      console.log('File selected:', file.name, file.type, file.size);
+
+      // Validate file type
+      if (!file.type.startsWith('image/')) {
+        setError('Please select an image file');
+        return;
+      }
+
+      const reader = new FileReader();
+      
+      reader.onloadstart = () => {
+        setIsProcessing(true);
+        console.log('Starting file read...');
+      };
+
+      reader.onload = (e) => {
+        console.log('File read successfully');
+        try {
+          const image = new Image();
+          image.onload = async () => {
+            try {
+              console.log('Image loaded, dimensions:', image.width, 'x', image.height);
+              const canvas = canvasRef.current;
+              if (!canvas) {
+                throw new Error('Canvas not available');
+              }
+              
+              const context = canvas.getContext('2d');
+              canvas.width = image.width;
+              canvas.height = image.height;
+              context.drawImage(image, 0, 0);
+
+              console.log('Processing image with OCR...');
+              const { data: { text } } = await Tesseract.recognize(
+                canvas,
+                'eng',
+                { 
+                  tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
+                }
+              );
+
+              console.log('Uploaded Image OCR Result:', text);
+              
+              if (text && text.trim()) {
+                const processedText = processOCRText(text);
+                if (processedText) {
+                  setSearchTerm(processedText);
+                  handleSearchFromScan(processedText);
+                } else {
+                  setError('No location text found in the image. Please try another image.');
+                }
+              } else {
+                setError('No text found in the image. Please try another image.');
+              }
+            } catch (err) {
+              console.error('OCR processing error:', err);
+              setError('Error processing image: ' + err.message);
+            } finally {
+              setIsProcessing(false);
+            }
+          };
+          
+          image.onerror = () => {
+            console.error('Error loading image');
+            setError('Error loading image file');
+            setIsProcessing(false);
+          };
+          
+          image.src = e.target.result;
+        } catch (err) {
+          console.error('Image processing error:', err);
+          setError('Error processing image: ' + err.message);
+          setIsProcessing(false);
+        }
+      };
+
+      reader.onerror = (err) => {
+        console.error('FileReader error:', err);
+        setError('Error reading file: ' + err);
+        setIsProcessing(false);
+      };
+
+      reader.onabort = () => {
+        console.log('File read aborted');
+        setIsProcessing(false);
+      };
+
+      // Use readAsDataURL instead of readAsArrayBuffer to fix the error
+      reader.readAsDataURL(file);
+      event.target.value = '';
+    };
+
+    const switchCamera = async (deviceId) => {
+      setSelectedCamera(deviceId);
+      selectedCameraRef.current = deviceId;
+      if (isScanning) {
+        stopCamera();
+        // Wait for camera to fully stop before starting new one
+        setTimeout(() => startCamera(), 1000);
+      }
+    };
+
+    // Load cameras on component mount
+    useEffect(() => {
+      getCameras();
+    }, []);
+
+    return (
+      <div className="text-scanner">
+        {!isScanning ? (
+          <div className="scan-options">
+            {cameraSupported ? (
+              <>
+                <div className="camera-selection">
+                  <label htmlFor="camera-select">Select Camera:</label>
+                  <select 
+                    id="camera-select"
+                    value={selectedCamera}
+                    onChange={(e) => switchCamera(e.target.value)}
+                    disabled={isLoadingCameras}
+                  >
+                    {isLoadingCameras ? (
+                      <option>Loading cameras...</option>
+                    ) : availableCameras.length === 0 ? (
+                      <option>No cameras detected</option>
+                    ) : (
+                      availableCameras.map(camera => (
+                        <option key={camera.deviceId} value={camera.deviceId}>
+                          {camera.label}
+                        </option>
+                      ))
+                    )}
+                  </select>
+                </div>
+                <button 
+                  type="button" 
+                  onClick={startCamera}
+                  className="scan-button"
                   disabled={isLoadingCameras}
                 >
-                  {isLoadingCameras ? (
-                    <option>Loading cameras...</option>
-                  ) : availableCameras.length === 0 ? (
-                    <option>No cameras detected - click scan to try</option>
-                  ) : (
-                    availableCameras.map(camera => (
+                  {isLoadingCameras ? 'Starting Camera...' : '📷 Scan with Camera'}
+                </button>
+              </>
+            ) : (
+              <div className="camera-not-supported">
+                <p>Camera not supported in this environment</p>
+              </div>
+            )}
+            
+            <div className="upload-option">
+              <p>Or upload an image:</p>
+              <input
+                type="file"
+                ref={fileInputRef}
+                onChange={handleImageUpload}
+                accept="image/*"
+                className="file-input"
+              />
+              <button 
+                type="button"
+                onClick={() => fileInputRef.current?.click()}
+                className="upload-button"
+                disabled={isProcessing}
+              >
+                {isProcessing ? 'Processing...' : '📁 Upload Image'}
+              </button>
+            </div>
+          </div>
+        ) : (
+          <div className="scanner-container">
+            <div className="scanner-header">
+              <h3>✅ Camera Active</h3>
+              <div className="scanner-controls">
+                {availableCameras.length > 1 && (
+                  <select 
+                    value={selectedCamera}
+                    onChange={(e) => switchCamera(e.target.value)}
+                    className="camera-switcher"
+                  >
+                    {availableCameras.map(camera => (
                       <option key={camera.deviceId} value={camera.deviceId}>
                         {camera.label}
                       </option>
-                    ))
-                  )}
-                </select>
-                {availableCameras.length === 0 && (
-                  <div className="camera-help-text">
-                    <p>No cameras detected in list, but camera may still work.</p>
-                    <p>Click "Scan with Camera" to attempt access.</p>
+                    ))}
+                  </select>
+                )}
+                <button 
+                  type="button" 
+                  onClick={captureManual}
+                  className="capture-button"
+                  disabled={isProcessing}
+                >
+                  {isProcessing ? 'Processing...' : '📸 Capture Now'}
+                </button>
+                <button 
+                  type="button" 
+                  onClick={stopCamera}
+                  className="stop-scan-button"
+                >
+                  ✕ Stop Camera
+                </button>
+              </div>
+            </div>
+            <div className="video-wrapper">
+              <video 
+                ref={videoRef}
+                autoPlay 
+                playsInline
+                muted
+                className="camera-video"
+                style={{ 
+                  border: '2px solid #00ff00',
+                  background: '#000'
+                }}
+              />
+              <canvas 
+                ref={canvasRef} 
+                style={{ 
+                  display: 'none',
+                  position: 'absolute',
+                  top: 0,
+                  left: 0
+                }} 
+              />
+              <div className="scan-overlay">
+                <div className="scan-frame">
+                  <div className="scan-corner top-left"></div>
+                  <div className="scan-corner top-right"></div>
+                  <div className="scan-corner bottom-left"></div>
+                  <div className="scan-corner bottom-right"></div>
+                </div>
+                <p>Point camera at location text</p>
+                <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
+                {isProcessing && (
+                  <div className="processing-indicator">
+                    <div className="spinner"></div>
+                    Reading text...
                   </div>
                 )}
               </div>
-              <button 
-                type="button" 
-                onClick={startCamera}
-                className="scan-button"
-                disabled={isLoadingCameras}
-              >
-                {isLoadingCameras ? 'Loading...' : '📷 Scan with Camera'}
-              </button>
-            </>
-          ) : (
-            <div className="camera-not-supported">
-              <p>Camera not supported in this environment</p>
             </div>
-          )}
-          
-          <div className="upload-option">
-            <p>Or upload an image:</p>
-            <input
-              type="file"
-              ref={fileInputRef}
-              onChange={handleImageUpload}
-              accept="image/*"
-              capture="environment"
-              className="file-input"
-            />
-            <button 
-              type="button"
-              onClick={() => fileInputRef.current?.click()}
-              className="upload-button"
-              disabled={isProcessing}
-            >
-              {isProcessing ? 'Processing...' : '📁 Upload Image'}
-            </button>
-          </div>
-        </div>
-      ) : (
-        <div className="scanner-container">
-          <div className="scanner-header">
-            <h3>📷 Camera Active - Point at Location Text</h3>
-            <div className="scanner-controls">
-              {availableCameras.length > 1 && (
-                <select 
-                  value={selectedCamera}
-                  onChange={(e) => switchCamera(e.target.value)}
-                  className="camera-switcher"
-                >
-                  {availableCameras.map(camera => (
-                    <option key={camera.deviceId} value={camera.deviceId}>
-                      {camera.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button 
-                type="button" 
-                onClick={captureManual}
-                className="capture-button"
-                disabled={isProcessing}
-              >
-                {isProcessing ? 'Processing...' : '📸 Capture Frame'}
-              </button>
-              <button 
-                type="button" 
-                onClick={stopCamera}
-                className="stop-scan-button"
-              >
-                ✕ Stop Camera
-              </button>
+            <div className="scanner-status">
+              <p>✅ Camera is running • Auto-scanning every 3 seconds</p>
+              <p className="video-debug">
+                Video status: {videoRef.current ? `ReadyState: ${videoRef.current.readyState}, Dimensions: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'No video element'}
+              </p>
             </div>
           </div>
-          <div className="video-wrapper">
-            <video 
-              ref={videoRef}
-              autoPlay 
-              playsInline
-              muted
-              className="camera-video"
-            />
-            <canvas ref={canvasRef} style={{ display: 'none' }} />
-            <div className="scan-overlay">
-              <div className="scan-frame">
-                <div className="scan-corner top-left"></div>
-                <div className="scan-corner top-right"></div>
-                <div className="scan-corner bottom-left"></div>
-                <div className="scan-corner bottom-right"></div>
-              </div>
-              <p>Position location text within frame</p>
-              <p className="scan-hint">e.g., "B-17 1B" will become "B-17.1B"</p>
-              {isProcessing && (
-                <div className="processing-indicator">
-                  <div className="spinner"></div>
-                  Reading text...
-                </div>
-              )}
-            </div>
-          </div>
-        </div>
-      )}
-    </div>
-  );
-};
+        )}
+      </div>
+    );
+  };
 
   const handlePrint = () => {
+    if (results.length === 0) return;
+    
     const printWindow = window.open('', '_blank');
     const isSingle = results.length === 1;
   
@@ -931,11 +1019,15 @@ const TextScanner = () => {
       return new Promise(resolve => {
         setTimeout(() => {
           const qrCanvas = tempDiv.querySelector('canvas');
-          ctx.drawImage(qrCanvas, 0, 0, size * 2, size * 2);
-          const dataUrl = canvas.toDataURL('image/png', 1.0);
-          ReactDOM.unmountComponentAtNode(tempDiv);
-          document.body.removeChild(tempDiv);
-          resolve(dataUrl);
+          if (qrCanvas) {
+            ctx.drawImage(qrCanvas, 0, 0, size * 2, size * 2);
+            const dataUrl = canvas.toDataURL('image/png', 1.0);
+            ReactDOM.unmountComponentAtNode(tempDiv);
+            document.body.removeChild(tempDiv);
+            resolve(dataUrl);
+          } else {
+            resolve('');
+          }
         }, 100);
       });
     };
@@ -943,7 +1035,10 @@ const TextScanner = () => {
     Promise.all(
       results.map(result => 
         renderHighQualityQR(result, isSingle ? 500 : 160)
-    )).then(qrDataUrls => {
+      )
+    ).then(qrDataUrls => {
+      const validQrDataUrls = qrDataUrls.filter(url => url !== '');
+      
       printWindow.document.write(`
   <html>
     <head>
@@ -1037,7 +1132,7 @@ const TextScanner = () => {
       ${isSingle ? `
         <div class="print-page">
           <div class="qr-container">
-            <img class="qr-image" src="${qrDataUrls[0]}" />
+            <img class="qr-image" src="${validQrDataUrls[0]}" />
           </div>
           <div class="print-location">${results[0].location}</div>
           ${results[0].referenceId ? `
@@ -1049,7 +1144,7 @@ const TextScanner = () => {
           ${results.map((result, index) => `
             <div class="print-item">
               <div class="qr-border">
-                <img src="${qrDataUrls[index]}" width="160" height="160" />
+                <img src="${validQrDataUrls[index]}" width="160" height="160" />
               </div>
               <div class="print-location">${result.location}</div>
             </div>
@@ -1066,6 +1161,9 @@ const TextScanner = () => {
   </html>
 `);
       printWindow.document.close();
+    }).catch(err => {
+      console.error('Print error:', err);
+      setError('Error generating print preview: ' + err.message);
     });
   };
 
@@ -1101,6 +1199,20 @@ const TextScanner = () => {
       default: return "#e74c3c";
     }
   };
+
+  // Cleanup on component unmount
+  useEffect(() => {
+    return () => {
+      if (streamRef.current) {
+        console.log('Cleaning up camera on main component unmount');
+        streamRef.current.getTracks().forEach(track => track.stop());
+        streamRef.current = null;
+      }
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+      }
+    };
+  }, []);
 
   return (
     <div className="qr-generator-container">
@@ -1350,7 +1462,7 @@ const TextScanner = () => {
           color: #777;
         }
         
-        /* Enhanced Text Scanner Styles */
+        /* Text Scanner Styles */
         .text-scanner {
           margin-top: 1rem;
         }
@@ -1407,12 +1519,6 @@ const TextScanner = () => {
           color: #721c24;
           border-radius: 8px;
           text-align: center;
-        }
-
-        .camera-help {
-          font-size: 0.9rem;
-          margin-top: 0.5rem;
-          opacity: 0.8;
         }
 
         .upload-option {
@@ -1521,18 +1627,25 @@ const TextScanner = () => {
           background-color: #c0392b;
         }
 
+        /* FIXED CAMERA VIDEO STYLES */
         .video-wrapper {
           position: relative;
           width: 100%;
           max-width: 500px;
           margin: 0 auto;
+          background: #000;
+          border-radius: 8px;
+          overflow: hidden;
+          min-height: 400px;
         }
 
         .camera-video {
           width: 100%;
-          height: auto;
+          height: 400px;
           display: block;
           background: #000;
+          object-fit: cover;
+          border-radius: 8px;
         }
 
         .scan-overlay {
@@ -1545,10 +1658,11 @@ const TextScanner = () => {
           flex-direction: column;
           justify-content: center;
           align-items: center;
-          background: rgba(0, 0, 0, 0.5);
+          background: rgba(0, 0, 0, 0.3);
           color: white;
           text-align: center;
           padding: 1rem;
+          pointer-events: none;
         }
 
         .scan-frame {
@@ -1618,6 +1732,20 @@ const TextScanner = () => {
           border-top: 2px solid #00ff00;
           border-radius: 50%;
           animation: spin 1s linear infinite;
+        }
+
+        .scanner-status {
+          padding: 0.5rem 1rem;
+          background-color: #d4edda;
+          color: #155724;
+          text-align: center;
+          border-top: 1px solid #c3e6cb;
+        }
+
+        .video-debug {
+          font-size: 0.8rem;
+          opacity: 0.7;
+          margin: 0.25rem 0 0 0;
         }
 
         @keyframes spin {
@@ -1800,6 +1928,14 @@ const TextScanner = () => {
           .camera-switcher {
             width: 100%;
             margin-bottom: 0.5rem;
+          }
+          
+          .camera-video {
+            height: 300px;
+          }
+          
+          .video-wrapper {
+            min-height: 300px;
           }
           
           .qr-code-item {
