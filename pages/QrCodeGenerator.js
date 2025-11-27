@@ -14,6 +14,7 @@ const QRCodeGenerator = () => {
   const [isScanning, setIsScanning] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [cameraSupported, setCameraSupported] = useState(true);
+  const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
   
   const searchInputRef = useRef(null);
   const resultsContainerRef = useRef(null);
@@ -445,6 +446,12 @@ const QRCodeGenerator = () => {
               console.log('Video playing successfully');
               console.log('Video readyState:', videoRef.current.readyState);
               console.log('Video dimensions:', videoRef.current.videoWidth, 'x', videoRef.current.videoHeight);
+              
+              // Update video dimensions for debugging
+              setVideoDimensions({
+                width: videoRef.current.videoWidth,
+                height: videoRef.current.videoHeight
+              });
               
               setIsScanning(true);
               setIsLoadingCameras(false);
@@ -948,19 +955,10 @@ const QRCodeGenerator = () => {
                 playsInline
                 muted
                 className="camera-video"
-                style={{ 
-                  border: '2px solid #00ff00',
-                  background: '#000'
-                }}
               />
               <canvas 
                 ref={canvasRef} 
-                style={{ 
-                  display: 'none',
-                  position: 'absolute',
-                  top: 0,
-                  left: 0
-                }} 
+                style={{ display: 'none' }}
               />
               <div className="scan-overlay">
                 <div className="scan-frame">
@@ -982,7 +980,9 @@ const QRCodeGenerator = () => {
             <div className="scanner-status">
               <p>✅ Camera is running • Auto-scanning every 3 seconds</p>
               <p className="video-debug">
-                Video status: {videoRef.current ? `ReadyState: ${videoRef.current.readyState}, Dimensions: ${videoRef.current.videoWidth}x${videoRef.current.videoHeight}` : 'No video element'}
+                Video: {videoDimensions.width}x{videoDimensions.height} • 
+                ReadyState: {videoRef.current?.readyState || 'N/A'} • 
+                Stream: {streamRef.current?.active ? 'Active' : 'Inactive'}
               </p>
             </div>
           </div>
@@ -1627,7 +1627,7 @@ const QRCodeGenerator = () => {
           background-color: #c0392b;
         }
 
-        /* FIXED CAMERA VIDEO STYLES */
+        /* FIXED CAMERA VIDEO STYLES - SIMPLIFIED */
         .video-wrapper {
           position: relative;
           width: 100%;
@@ -1645,7 +1645,6 @@ const QRCodeGenerator = () => {
           display: block;
           background: #000;
           object-fit: cover;
-          border-radius: 8px;
         }
 
         .scan-overlay {
@@ -1658,7 +1657,7 @@ const QRCodeGenerator = () => {
           flex-direction: column;
           justify-content: center;
           align-items: center;
-          background: rgba(0, 0, 0, 0.3);
+          background: transparent;
           color: white;
           text-align: center;
           padding: 1rem;
