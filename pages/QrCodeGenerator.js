@@ -11,11 +11,11 @@ const QRCodeGenerator = () => {
   const [error, setError] = useState(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState(null);
+  const [scanHistory, setScanHistory] = useState([]); // NEW: State for scan history
   
   const searchInputRef = useRef(null);
   const resultsContainerRef = useRef(null);
   const suggestionsRef = useRef(null);
-  // Removed: fileInputRef
   
   // Initialize areas data with type information
   const [areas, setAreas] = useState({
@@ -54,7 +54,7 @@ const QRCodeGenerator = () => {
     checkCameraSupport();
   }, []);
 
-  // Quick Links Dropdown Component
+  // Quick Links Dropdown Component (Unchanged)
   const QuickLinksDropdown = () => {
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef(null);
@@ -113,7 +113,80 @@ const QRCodeGenerator = () => {
     );
   };
 
-  // Load data on component mount
+  // Utility functions (Unchanged)
+  const generateRange = (prefix, start, end) => {
+    const locations = [];
+    for (let i = start; i <= end; i++) {
+      locations.push(`${prefix}${i}`);
+    }
+    return locations;
+  };
+
+  const formatInput = (value) => {
+    if (!value) return [];
+    
+    value = value.toUpperCase().trim();
+
+    const rangeMatch = value.match(/^([A-Z]+)(\d+)\s*-\s*([A-Z]+)(\d+)$/);
+    if (rangeMatch && rangeMatch[1] === rangeMatch[3]) {
+      const prefix = rangeMatch[1];
+      const start = parseInt(rangeMatch[2], 10);
+      const end = parseInt(rangeMatch[4], 10);
+      
+      if (start <= end) {
+        return generateRange(prefix, start, end);
+      }
+      return [value];
+    }
+
+    const patternMatch = value.match(/^([A-Z])(\d{1,2})(\d)([A-Z])$/);
+    if (patternMatch) {
+      const [, letter, firstDigits, lastDigit, endingLetter] = patternMatch;
+      return [`${letter}-${firstDigits}.${lastDigit}${endingLetter}`];
+    }
+
+    if (value.length === 3 && value !== "RTS" && !/AX|AV|RX|RV/.test(value)) {
+      return [`STG.${value}`];
+    }
+    else if (value.length === 2 && /[ABCDEGHJKLM]/.test(value) && !/AX|AV|RX|RV/.test(value)) {
+      return [`STG.${value.charAt(0)}0${value.charAt(1)}`];
+    }
+    else if (value.includes("DD")) {
+      return [value];
+    }
+    else if (value.length < 7 && /[ABCDEGJKLM]/.test(value) && !/OV|-|STG|AX|AV|RX|RV/.test(value)) {
+      return [`${value.charAt(0)}-${value.slice(1)}`];
+    }
+
+    return [value];
+  };
+
+  const findReferenceId = (location) => {
+    const allAreas = [
+      ...areas.STAGING_AREA,
+      ...areas.STACKING_AREA,
+      ...areas.GENERAL_AREA,
+      ...areas.OTHER_AREA
+    ];
+    
+    const found = allAreas.find(item => item.location === location);
+    return found ? { referenceID: found.referenceID, type: found.type } : null;
+  };
+  
+  const getTypeDisplayName = (type) => { 
+    return type.replace(/_/g, ' ').toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+  };
+  
+  const getTypeColor = (type) => {
+    switch (type) {
+        case "STAGING_AREA": return '#3498db'; // Blue
+        case "STACKING_AREA": return '#2ecc71'; // Green
+        case "GENERAL_AREA": return '#f39c12'; // Yellow/Orange
+        default: return '#95a5a6'; // Gray
+    }
+  };
+
+  // Load data on component mount (Unchanged)
   useEffect(() => {
     const loadData = () => {
       const newAreas = {
@@ -152,7 +225,7 @@ const QRCodeGenerator = () => {
     searchInputRef.current?.focus();
   }, []);
 
-  // Update suggestions when search term changes
+  // Update suggestions when search term changes (Unchanged)
   useEffect(() => {
     if (!searchTerm.trim()) {
       setSuggestions([]);
@@ -175,7 +248,7 @@ const QRCodeGenerator = () => {
     setSuggestions(filtered);
   }, [searchTerm, areas]);
 
-  // Close suggestions when clicking outside
+  // Close suggestions when clicking outside (Unchanged)
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (suggestionsRef.current && !suggestionsRef.current.contains(event.target)) {
@@ -189,72 +262,7 @@ const QRCodeGenerator = () => {
     };
   }, []);
 
-  // Generate all locations in a range
-  const generateRange = (prefix, start, end) => {
-    const locations = [];
-    for (let i = start; i <= end; i++) {
-      locations.push(`${prefix}${i}`);
-    }
-    return locations;
-  };
-
-  // Format input according to business rules
-  const formatInput = (value) => {
-    if (!value) return [];
-    
-    value = value.toUpperCase().trim();
-
-    // Handle ranges first (they shouldn't be transformed)
-    const rangeMatch = value.match(/^([A-Z]+)(\d+)\s*-\s*([A-Z]+)(\d+)$/);
-    if (rangeMatch && rangeMatch[1] === rangeMatch[3]) {
-      const prefix = rangeMatch[1];
-      const start = parseInt(rangeMatch[2], 10);
-      const end = parseInt(rangeMatch[4], 10);
-      
-      if (start <= end) {
-        return generateRange(prefix, start, end);
-      }
-      return [value]; // Return original if invalid range
-    }
-
-    // New transformation for patterns like a233a, b11a, z344e
-    const patternMatch = value.match(/^([A-Z])(\d{1,2})(\d)([A-Z])$/);
-    if (patternMatch) {
-      const [, letter, firstDigits, lastDigit, endingLetter] = patternMatch;
-      return [`${letter}-${firstDigits}.${lastDigit}${endingLetter}`];
-    }
-
-    // Handle single values
-    if (value.length === 3 && value !== "RTS" && !/AX|AV|RX|RV/.test(value)) {
-      return [`STG.${value}`];
-    }
-    else if (value.length === 2 && /[ABCDEGHJKLM]/.test(value) && !/AX|AV|RX|RV/.test(value)) {
-      return [`STG.${value.charAt(0)}0${value.charAt(1)}`];
-    }
-    else if (value.includes("DD")) {
-      return [value];
-    }
-    else if (value.length < 7 && /[ABCDEGJKLM]/.test(value) && !/OV|-|STG|AX|AV|RX|RV/.test(value)) {
-      return [`${value.charAt(0)}-${value.slice(1)}`];
-    }
-
-    return [value];
-  };
-
-  // Find reference ID for a location
-  const findReferenceId = (location) => {
-    const allAreas = [
-      ...areas.STAGING_AREA,
-      ...areas.STACKING_AREA,
-      ...areas.GENERAL_AREA,
-      ...areas.OTHER_AREA
-    ];
-    
-    const found = allAreas.find(item => item.location === location);
-    return found ? { referenceID: found.referenceID, type: found.type } : null;
-  };
-
-  // Handle search submission
+  // Handle search submission (Unchanged)
   const handleSearch = (e) => {
     e.preventDefault();
     setError(null);
@@ -312,7 +320,7 @@ const QRCodeGenerator = () => {
     }
   };
 
-  // Handle suggestion selection with delay
+  // Handle suggestion selection with delay (Unchanged)
   const handleSuggestionSelect = (suggestion, e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -342,7 +350,37 @@ const QRCodeGenerator = () => {
     }
   };
 
-  // Text Scanner Component - CLEANED VERSION
+  // NEW: Handle selection from history list
+  const handleHistorySelect = (historyItem) => {
+    setSearchTerm(historyItem.location);
+    setError(null);
+    
+    const result = findReferenceId(historyItem.location);
+    if (result) {
+        setResults([{
+            location: historyItem.location,
+            referenceId: result.referenceID,
+            type: result.type
+        }]);
+        setError(null);
+        setTimeout(() => resultsContainerRef.current?.scrollIntoView({ behavior: 'smooth' }), 100);
+    } else {
+        setError(`Location not found: ${historyItem.location}`);
+        setResults([]);
+    }
+    setShowSuggestions(false);
+  };
+
+  const handleClear = () => { 
+    setSearchTerm('');
+    setResults([]);
+    setError(null);
+    setShowSuggestions(false);
+  };
+
+  const handlePrint = () => { window.print(); };
+
+  // Text Scanner Component - UPDATED VERSION
   const TextScanner = () => {
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
@@ -356,11 +394,12 @@ const QRCodeGenerator = () => {
     const [selectedCamera, setSelectedCamera] = useState('');
     const [cameraError, setCameraError] = useState('');
     const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+    const [lastScannedText, setLastScannedText] = useState(''); // NEW: For debouncing
 
     const camerasRef = useRef([]);
     const selectedCameraRef = useRef('');
     
-    // Get available cameras (logic remains the same)
+    // Get available cameras (Unchanged)
     const getCameras = async () => {
       if (!navigator.mediaDevices?.enumerateDevices) {
         return [];
@@ -368,7 +407,6 @@ const QRCodeGenerator = () => {
 
       try {
         setIsLoadingCameras(true);
-        // Request camera access to populate the device list labels
         await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
 
         const devices = await navigator.mediaDevices.enumerateDevices();
@@ -413,27 +451,28 @@ const QRCodeGenerator = () => {
       setIsProcessing(false);
       setCameraError('');
       setVideoDimensions({ width: 0, height: 0 });
+      setLastScannedText('');
       
       if (videoRef.current) {
         videoRef.current.srcObject = null;
       }
     };
     
-    // Cleanup on unmount
+    // Cleanup on unmount (Unchanged)
     useEffect(() => {
         getCameras();
         return () => stopCamera();
     }, []);
 
-
     const startCamera = async () => {
+      // ... (Camera setup logic remains the same) ...
       try {
         setError(null);
         setCameraError('');
         setIsLoadingCameras(true);
 
         stopCamera(); 
-        await new Promise(resolve => setTimeout(resolve, 300)); // Allow previous stream to release
+        await new Promise(resolve => setTimeout(resolve, 300)); 
 
         if (!videoRef.current || !canvasRef.current) {
           setCameraError('Camera elements not ready. Please try again.');
@@ -445,34 +484,25 @@ const QRCodeGenerator = () => {
           video: {
             width: { ideal: 1280 },
             height: { ideal: 720 },
-            facingMode: 'environment' // Prefer rear camera by default
+            facingMode: 'environment' 
           } 
         };
 
         const currentSelectedCamera = selectedCamera || selectedCameraRef.current;
         if (currentSelectedCamera && availableCameras.length > 0) {
           constraints.video.deviceId = { exact: currentSelectedCamera };
-          // If a specific device is selected, don't use facingMode as it can conflict
           delete constraints.video.facingMode;
         }
 
-        // 1. Get the stream
         const stream = await navigator.mediaDevices.getUserMedia(constraints);
         
-        console.log('Step 1: Successfully acquired camera stream.');
-        
-        // 2. Attach stream to the video element
         streamRef.current = stream;
         videoRef.current.srcObject = stream;
         const video = videoRef.current;
         
-        // 3. Robust Playback Logic
         const attemptPlay = () => {
             if (video.readyState >= 1) { 
-                console.log('Step 3a: Attempting video.play()...');
                 video.play().then(() => {
-                    // SUCCESS PATH
-                    console.log('Step 3b: Video playing successfully.'); 
                     setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
                     
                     setIsScanning(true);
@@ -480,13 +510,11 @@ const QRCodeGenerator = () => {
                     startOCRCapturing();
                     
                 }).catch(err => {
-                    // FAILURE PATH: Autoplay Blocked or Other Playback Error
-                    console.error('Step 3c: Video Playback Error:', err);
+                    console.error('Video Playback Error:', err);
                     setCameraError('Video failed to play. Check browser security settings.');
                     stopCamera();
                 });
             } else {
-                // Wait for metadata
                 video.onloadedmetadata = () => {
                      attemptPlay(); 
                      video.onloadedmetadata = null; 
@@ -518,6 +546,7 @@ const QRCodeGenerator = () => {
       }
     };
 
+    // UPDATED: Capture interval changed to 1.5 seconds
     const startOCRCapturing = () => {
       console.log('Starting OCR capturing...');
       
@@ -533,9 +562,10 @@ const QRCodeGenerator = () => {
         if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
           captureAndProcessFrame();
         }
-      }, 3000);
+      }, 1500); // <-- 1500ms for faster capture
     };
 
+    // UPDATED: Added debouncing logic
     const captureAndProcessFrame = async () => {
       const video = videoRef.current;
       const canvas = canvasRef.current;
@@ -564,10 +594,13 @@ const QRCodeGenerator = () => {
         
         if (text && text.trim()) {
           const processedText = processOCRText(text);
-          if (processedText) {
-            console.log('Found location:', processedText);
+          
+          if (processedText && processedText !== lastScannedText) {
+            console.log('Found new unique location:', processedText);
             handleScannedText(processedText);
-            stopCamera(); // Stop camera once a valid result is found
+            setLastScannedText(processedText);
+          } else if (processedText && processedText === lastScannedText) {
+             console.log('Location is the same, skipping update.');
           }
         }
       } catch (err) {
@@ -582,7 +615,6 @@ const QRCodeGenerator = () => {
         .replace(/\s+/g, ' ')
         .toUpperCase();
       
-      // Complex patterns (e.g., A-17 1B)
       const patterns = [
         /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
         /([A-Z])(\d+)\s+(\d+)([A-Z])/,
@@ -594,14 +626,12 @@ const QRCodeGenerator = () => {
       for (const pattern of patterns) {
         const match = cleanedText.match(pattern);
         if (match) {
-          // Re-assemble into standard format X-NN.NX
           const [, letter, firstNum, secondNum, endingLetter] = match;
           const result = `${letter}-${firstNum.replace(/-/g, '')}.${secondNum}${endingLetter}`;
           return result;
         }
       }
       
-      // Simple patterns (e.g., STG.H02, A-17.1B)
       const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?|STG\.[A-Z]\d{2,3}/;
       const locationMatch = cleanedText.match(locationPattern);
       if (locationMatch) {
@@ -611,15 +641,11 @@ const QRCodeGenerator = () => {
       return null;
     };
 
+    // UPDATED: Logic to handle search, update history, and NOT stop the camera
     const handleScannedText = (scannedText) => {
-      setSearchTerm(scannedText);
-      setTimeout(() => {
-        handleSearchFromScan(scannedText);
-      }, 100);
-    };
+      // Set the search term for the input box
+      setSearchTerm(scannedText); 
 
-    const handleSearchFromScan = (scannedText) => {
-      setError(null);
       const formattedInputs = formatInput(scannedText);
       const newResults = [];
 
@@ -634,13 +660,33 @@ const QRCodeGenerator = () => {
         }
       });
 
-      if (newResults.length === 0) {
-        setError(`No matching locations found for: ${scannedText}`);
-        return;
-      }
+      if (newResults.length > 0) {
+        const currentResult = newResults[0];
+        
+        // Update main results UI
+        setResults(newResults);
+        setError(null);
+        
+        // Update history
+        setScanHistory(prevHistory => {
+            const newEntry = {
+                location: currentResult.location, 
+                type: currentResult.type,
+                timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+            };
+            
+            // Filter out existing duplicates and keep history limited to 10
+            const filteredHistory = prevHistory.filter(item => item.location !== newEntry.location);
+            
+            return [newEntry, ...filteredHistory].slice(0, 10);
+        });
 
-      setResults(newResults);
-      setError(null);
+      } else {
+        // Only set error if it's a new, invalid scan
+        // setError(`No matching locations found for: ${scannedText}`);
+      }
+      
+      // REMOVED: stopCamera() is no longer called here
     };
 
     const captureManual = () => {
@@ -655,7 +701,6 @@ const QRCodeGenerator = () => {
       selectedCameraRef.current = deviceId;
       if (isScanning) {
         stopCamera();
-        // Give the camera a moment to stop before starting again
         setTimeout(() => startCamera(), 500);
       }
     };
@@ -663,12 +708,11 @@ const QRCodeGenerator = () => {
     return (
       <div className="text-scanner">
         
-        {/* CANVAS IS ALWAYS RENDERED, ALWAYS HIDDEN */}
         <div style={{ display: 'none' }}>
           <canvas ref={canvasRef} /> 
         </div>
 
-        {/* Video container visibility controlled by isScanning state */}
+        {/* Camera View */}
         <div className={`scanner-container ${isScanning ? 'is-scanning' : 'is-hidden'}`}>
           <div className="scanner-header">
             <h3>✅ Camera Active</h3>
@@ -707,7 +751,7 @@ const QRCodeGenerator = () => {
           <div className="video-display-container">
             <div className="video-wrapper">
               <video 
-                ref={videoRef} // ALWAYS attached
+                ref={videoRef} 
                 srcObject={streamRef.current}
                 autoPlay 
                 playsInline
@@ -735,7 +779,7 @@ const QRCodeGenerator = () => {
           </div>
           
           <div className="scanner-status">
-            <p>✅ Camera is running • Auto-scanning every 3 seconds</p>
+            <p>✅ Camera is running • Scanning every 1.5 seconds</p>
             <p className="video-debug">
               Video: {videoDimensions.width}x{videoDimensions.height} • 
               Stream: {streamRef.current?.active ? 'Active' : 'Inactive'}
@@ -743,7 +787,7 @@ const QRCodeGenerator = () => {
           </div>
         </div>
         
-        {/* START BUTTONS ARE DISPLAYED CONDITIONAL TO IS_SCANNING STATE */}
+        {/* Start Button */}
         {!isScanning ? (
           <div className="scan-options">
             {cameraSupported ? (
@@ -775,7 +819,7 @@ const QRCodeGenerator = () => {
                   className="scan-button"
                   disabled={isLoadingCameras}
                 >
-                  {isLoadingCameras ? 'Starting Camera...' : '📷 Scan with Camera'}
+                  {isLoadingCameras ? 'Starting Camera...' : '📷 Start Continuous Scan'}
                 </button>
                 {cameraError && (
                   <div className="camera-error-message">
@@ -788,22 +832,12 @@ const QRCodeGenerator = () => {
                 <p>Camera not supported in this environment</p>
               </div>
             )}
-            
-            {/* Removed: Image Upload Option */}
           </div>
         ) : null}
       </div>
     );
   };
   
-  // The rest of the QRCodeGenerator methods (handlePrint, handleClear, getTypeDisplayName, getTypeColor) 
-  // are assumed to be outside of this TextScanner block, but remain unchanged.
-
-  const handlePrint = () => { /* ... (Your implementation here) ... */ };
-  const handleClear = () => { /* ... (Your implementation here) ... */ };
-  const getTypeDisplayName = (type) => { /* ... (Your implementation here) ... */ };
-  const getTypeColor = (type) => { /* ... (Your implementation here) ... */ };
-
 
   return (
     <div className="qr-generator-container">
@@ -813,6 +847,10 @@ const QRCodeGenerator = () => {
         <QuickLinksDropdown />
       </header>
 
+      {/* TOP SECTION: Camera/Scanner UI */}
+      <TextScanner />
+
+      {/* BOTTOM SECTION: Search, History, and Results */}
       <div className="qr-generator-content">
         <form onSubmit={handleSearch} className="search-form">
           <div className="search-input-container" ref={suggestionsRef}>
@@ -852,9 +890,6 @@ const QRCodeGenerator = () => {
               )}
             </div>
             
-            {/* Text Scanner */}
-            <TextScanner />
-            
             {showSuggestions && suggestions.length > 0 && (
               <div className="suggestions-dropdown">
                 {suggestions.map((suggestion, index) => (
@@ -873,6 +908,28 @@ const QRCodeGenerator = () => {
             )}
           </div>
         </form>
+
+        {/* NEW: Scan History Display */}
+        {scanHistory.length > 0 && (
+            <div className="scan-history-container">
+                <h3>Recent Scans (Tap to Search)</h3>
+                <div className="history-list">
+                    {scanHistory.map((item, index) => (
+                        <button
+                            key={item.location + index}
+                            onClick={() => handleHistorySelect(item)}
+                            className="history-item-button"
+                            title={`Scanned at ${item.timestamp}`}
+                        >
+                            {item.location}
+                            <span className="history-timestamp">{item.timestamp}</span>
+                        </button>
+                    ))}
+                </div>
+            </div>
+        )}
+        {/* END Scan History */}
+
 
         {error && <div className="error-message">{error}</div>}
 
@@ -948,7 +1005,7 @@ const QRCodeGenerator = () => {
           margin-bottom: 1rem;
         }
 
-        /* Quick Links Styles */
+        /* Quick Links Styles (Unchanged) */
         .quick-links-container {
           position: relative;
           display: inline-block;
@@ -1065,13 +1122,14 @@ const QRCodeGenerator = () => {
         
         /* Text Scanner Styles */
         .text-scanner {
-          margin-top: 1rem;
+          margin-bottom: 1rem; /* Adjust space between scanner and search */
         }
 
         .scan-options {
           display: flex;
           flex-direction: column;
           gap: 1rem;
+          margin-bottom: 2rem; /* Give space before search form */
         }
 
         .camera-selection {
@@ -1384,6 +1442,56 @@ const QRCodeGenerator = () => {
           margin-bottom: 1rem;
           border-left: 4px solid #e74c3c;
         }
+
+        /* NEW: Scan History Styles */
+        .scan-history-container {
+            margin-top: 1.5rem;
+            padding: 1rem;
+            border: 1px solid #eee;
+            border-radius: 8px;
+            background: #fdfdff;
+        }
+
+        .scan-history-container h3 {
+            font-size: 1.1rem;
+            color: #34495e;
+            margin-top: 0;
+            margin-bottom: 0.75rem;
+            border-bottom: 1px solid #eee;
+            padding-bottom: 0.5rem;
+        }
+
+        .history-list {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 0.5rem;
+        }
+
+        .history-item-button {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.5rem 1rem;
+            background-color: #ecf0f1;
+            color: #2c3e50;
+            border: 1px solid #ddd;
+            border-radius: 20px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+        }
+
+        .history-item-button:hover {
+            background-color: #bdc3c7;
+            border-color: #b0b0b0;
+        }
+
+        .history-timestamp {
+            font-size: 0.75rem;
+            color: #7f8c8d;
+        }
+        /* END Scan History Styles */
         
         .results-container {
           margin-top: 2rem;
@@ -1511,14 +1619,21 @@ const QRCodeGenerator = () => {
             margin-bottom: 0.5rem;
           }
           
+          /* Mobile-Optimized Layout: Constrain camera size */
           .camera-video {
-            height: 300px;
+            height: 250px; /* Smaller height for top-half display */
           }
           
           .video-wrapper {
-            min-height: 300px;
+            min-height: 250px;
           }
           
+          .scan-frame {
+            width: 200px;
+            height: 80px;
+          }
+          /* End Mobile-Optimized Layout */
+
           .qr-code-item {
             flex-direction: column;
             gap: 1rem;
