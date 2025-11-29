@@ -351,9 +351,9 @@ const QRCodeGenerator = () => {
         clearInterval(captureIntervalRef.current);
       }
       
-      // Interval set to 3s (3000ms)
+      // Interval set to 1.5s (1500ms) - REQUESTED CHANGE
       captureIntervalRef.current = setInterval(() => {
-        console.log('--- OCR Interval Tick Attempt (3s) ---'); 
+        console.log('--- OCR Interval Tick Attempt (1.5s) ---'); 
         
         // Skip scanning if a result is already displayed
         if (scannedResult) {
@@ -366,7 +366,7 @@ const QRCodeGenerator = () => {
         }
         
         captureAndProcessFrame();
-      }, 3000); // <-- INTERVAL SET TO 3 SECONDS
+      }, 1500); // <-- INTERVAL SET TO 1.5 SECONDS
     };
 
     const captureAndProcessFrame = async () => {
@@ -462,17 +462,8 @@ const QRCodeGenerator = () => {
         onScanComplete(scannedText, setScannedResult);
       }
     };
-
-    const captureManual = () => {
-      if (!isScanning || isProcessing || !streamRef.current || scannedResult) {
-        // Prevent manual capture if already showing a result
-        if (scannedResult) {
-            alert("Clear the current result before scanning manually.");
-        }
-        return;
-      }
-      captureAndProcessFrame();
-    };
+    
+    // REMOVED: captureManual function
 
     const switchCamera = async (deviceId) => {
       setSelectedCamera(deviceId);
@@ -506,14 +497,7 @@ const QRCodeGenerator = () => {
           <div className="camera-header">
             <h3>📷 Live Camera Scanner</h3>
             <div className="camera-controls">
-              <button 
-                type="button" 
-                onClick={captureManual}
-                className="capture-button"
-                disabled={isProcessing || !isScanning || scannedResult} // Disable if result is shown
-              >
-                {isProcessing ? 'Processing...' : '📸 Capture Now'}
-              </button>
+              {/* REMOVED: Capture Now button */}
               <button 
                 type="button" 
                 onClick={handleClose}
@@ -539,60 +523,63 @@ const QRCodeGenerator = () => {
               {/* Scan Overlay (Only show when actively scanning) */}
               {isScanning && (
                 <div className="scan-overlay">
-                  <div className="scan-frame">
-                    <div className="scan-corner top-left"></div>
-                    <div className="scan-corner top-right"></div>
-                    <div className="scan-corner bottom-left"></div>
-                    <div className="scan-corner bottom-right"></div>
-                  </div>
-                  <p className="scan-message">Point camera at location text</p>
-                  <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
-                  
-                  {detectedText && (
-                    <div className="detected-text">
-                      <strong>Detected:</strong> {detectedText}
-                    </div>
-                  )}
-                  
-                  {isProcessing && (
-                    <div className="processing-indicator">
-                      <div className="spinner"></div>
-                      Reading text...
-                    </div>
-                  )}
-
-                  {/* NEW: Display the QR code if a result is found */}
-                  {scannedResult && (
-                      <div className="scanned-qr-code-display">
-                          <h4>✅ Code Found: {scannedResult.location}</h4>
-                          <div className="qr-code-wrapper-modal">
-                              {/* ADDED FALLBACK for robustness */}
-                              <QRCodeCanvas 
-                                value={scannedResult.referenceId || 'NO_REF_ID_FOUND'} 
-                                size={120} // Smaller size for modal
-                                level="H"
-                                includeMargin={true}
-                              />
-                          </div>
-                          <div className="qr-code-details-modal">
-                              <div className="location-modal">{scannedResult.location}</div>
-                              <div 
-                                className="type-modal" 
-                                style={{ color: getTypeColor(scannedResult.type) }}
-                              >
-                                  {getTypeDisplayName(scannedResult.type)}
-                              </div>
-                              <div className="reference-id-modal">Ref: {scannedResult.referenceId}</div>
-                          </div>
-                          <button 
-                            onClick={handleClearResult} 
-                            className="clear-result-button"
-                          >
-                            Clear Result & Resume Scan
-                          </button>
-                      </div>
-                  )}
-                  {/* END NEW DISPLAY */}
+                    
+                    {/* CONDITIONAL RENDERING: Show QR code or scanning elements */}
+                    {scannedResult ? (
+                        // NEW BLOCK FOR QR CODE DISPLAY - CENTERING VIA FLEXBOX
+                        <div className="scanned-qr-code-display-fixed">
+                            <h4>✅ Code Found: {scannedResult.location}</h4>
+                            <div className="qr-code-wrapper-modal">
+                                <QRCodeCanvas 
+                                  value={scannedResult.referenceId || 'NO_REF_ID_FOUND'} 
+                                  size={120} // Smaller size for modal
+                                  level="H"
+                                  includeMargin={true}
+                                />
+                            </div>
+                            <div className="qr-code-details-modal">
+                                <div className="location-modal">{scannedResult.location}</div>
+                                <div 
+                                  className="type-modal" 
+                                  style={{ color: getTypeColor(scannedResult.type) }}
+                                >
+                                    {getTypeDisplayName(scannedResult.type)}
+                                </div>
+                                <div className="reference-id-modal">Ref: {scannedResult.referenceId}</div>
+                            </div>
+                            <button 
+                              onClick={handleClearResult} 
+                              className="clear-result-button"
+                            >
+                              Clear Result & Resume Scan
+                            </button>
+                        </div>
+                    ) : (
+                        // SCANNING ELEMENTS (Only visible when no result is found)
+                        <>
+                            <div className="scan-frame">
+                                <div className="scan-corner top-left"></div>
+                                <div className="scan-corner top-right"></div>
+                                <div className="scan-corner bottom-left"></div>
+                                <div className="scan-corner bottom-right"></div>
+                            </div>
+                            <p className="scan-message">Point camera at location text</p>
+                            <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
+                            
+                            {detectedText && (
+                                <div className="detected-text">
+                                    <strong>Detected:</strong> {detectedText}
+                                </div>
+                            )}
+                            
+                            {isProcessing && (
+                                <div className="processing-indicator">
+                                    <div className="spinner"></div>
+                                    Reading text...
+                                </div>
+                            )}
+                        </>
+                    )}
                 </div>
               )}
             </div>
@@ -674,7 +661,7 @@ const QRCodeGenerator = () => {
                     </p>
                   ) : (
                     <p>
-                      ✅ Camera Active • Scanning every 3 seconds
+                      ✅ Camera Active • Scanning every 1.5 seconds
                     </p>
                   )}
                   {detectedText && detectedText !== 'Scanning...' && detectedText !== 'No text detected or recognized.' && (
@@ -749,20 +736,7 @@ const QRCodeGenerator = () => {
             gap: 0.5rem;
           }
 
-          .capture-button {
-            padding: 0.5rem 1rem;
-            background: #27ae60;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-weight: 600;
-          }
-
-          .capture-button:disabled {
-            background: #95a5a6;
-            cursor: not-allowed;
-          }
+          /* Removed .capture-button styles */
 
           .close-camera-button {
             padding: 0.5rem 1rem;
@@ -864,16 +838,17 @@ const QRCodeGenerator = () => {
             left: 0;
             right: 0;
             bottom: 0;
+            /* CRUCIAL: Center content using flexbox */
             display: flex;
-            flex-direction: column;
-            justify-content: center;
-            align-items: center;
+            flex-direction: column; 
+            justify-content: center; 
+            align-items: center; 
+            
             background: transparent;
             color: white;
             text-align: center;
             padding: 1rem;
             pointer-events: none;
-            /* Allow content to scroll if needed */
             overflow-y: auto; 
           }
 
@@ -943,26 +918,22 @@ const QRCodeGenerator = () => {
           }
           
           /* NEW QR CODE DISPLAY STYLES - FIXES */
-          .scanned-qr-code-display {
-            /* Position absolutely within scan-overlay */
-            position: absolute; 
-            top: 50%;
-            left: 50%;
-            transform: translate(-50%, -50%);
+          .scanned-qr-code-display-fixed {
+            /* Now centered by the parent .scan-overlay's flex properties */
             
-            background: rgba(255, 255, 255, 0.98); /* Near opaque white */
+            background: rgba(255, 255, 255, 1); /* Fully opaque white background for visibility */
             padding: 1.5rem;
             border-radius: 12px;
-            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); /* Clear shadow for visibility */
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); 
             display: flex;
             flex-direction: column;
             align-items: center;
-            pointer-events: auto;
+            pointer-events: auto; /* Re-enable click on the box */
             max-width: 90%;
-            z-index: 10; /* Ensure it is above other overlay elements */
+            z-index: 20; /* Ensure it is on top of everything */
           }
 
-          .scanned-qr-code-display h4 {
+          .scanned-qr-code-display-fixed h4 {
             color: #2c3e50;
             margin: 0 0 1rem 0;
             font-size: 1.2rem;
@@ -1485,7 +1456,7 @@ const QRCodeGenerator = () => {
     <div className="qr-generator-container">
       <header className="qr-generator-header">
         <h1>DFX3 Station Codes</h1>
-        <p>Updated on 11/28/25 (by mvvlasc)</p>
+        <p>Updated on 4/20/25 (by mvvlasc)</p>
         <QuickLinksDropdown />
         
         {/* Button to open modular camera */}
