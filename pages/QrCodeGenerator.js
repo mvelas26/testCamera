@@ -1582,14 +1582,6 @@ const QRCodeGenerator = () => {
               </div>
             )}
           </div>
-          {/* Button to open modular camera */}
-        <button 
-          className="open-modular-camera-button"
-          onClick={() => setShowModularCamera(true)}
-          disabled={!cameraSupported}
-        >
-          {cameraSupported ? 'Camera Text Scanner' : 'Camera Not Supported'}
-        </button>
         </form>
 
         {/* Scan History Display */}
@@ -1649,6 +1641,14 @@ const QRCodeGenerator = () => {
             </div>
           </div>
         )}
+        {/* Button to open modular camera */}
+        <button 
+          className="open-modular-camera-button"
+          onClick={() => setShowModularCamera(true)}
+          disabled={!cameraSupported}
+        >
+          {cameraSupported ? 'Camera Text Scanner' : 'Camera Not Supported'}
+        </button>
       </div>
 
       <style jsx>{`
