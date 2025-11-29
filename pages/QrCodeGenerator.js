@@ -1516,15 +1516,6 @@ const QRCodeGenerator = () => {
         <h1>DFX3 Station Codes</h1>
         <p>Updated on 11/28/25 (by mvvlasc)</p>
         <QuickLinksDropdown />
-        
-        {/* Button to open modular camera */}
-        <button 
-          className="open-modular-camera-button"
-          onClick={() => setShowModularCamera(true)}
-          disabled={!cameraSupported}
-        >
-          {cameraSupported ? 'Camera Text Scanner' : 'Camera Not Supported'}
-        </button>
       </header>
 
       {/* Render modular camera when needed */}
@@ -1591,6 +1582,14 @@ const QRCodeGenerator = () => {
               </div>
             )}
           </div>
+          {/* Button to open modular camera */}
+        <button 
+          className="open-modular-camera-button"
+          onClick={() => setShowModularCamera(true)}
+          disabled={!cameraSupported}
+        >
+          {cameraSupported ? 'Camera Text Scanner' : 'Camera Not Supported'}
+        </button>
         </form>
 
         {/* Scan History Display */}
