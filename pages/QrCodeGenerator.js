@@ -374,7 +374,7 @@ const QRCodeGenerator = () => {
         }
         
         captureAndProcessFrame();
-      }, 3000); 
+      }, 1500); 
     };
 
     const captureAndProcessFrame = async () => {
