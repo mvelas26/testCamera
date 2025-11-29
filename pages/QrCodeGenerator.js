@@ -4,6 +4,25 @@ import ReactDOM from 'react-dom';
 import DFX3 from 'Resources/DFX3.json';
 import Tesseract from 'tesseract.js';
 
+// --- Utility Functions (Extracted for use in both components) ---
+
+const getTypeDisplayName = (type) => { 
+    if (!type) return 'N/A';
+    return type.replace(/_/g, ' ').toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
+};
+
+const getTypeColor = (type) => {
+    switch (type) {
+        case "STAGING_AREA": return '#3498db'; // Blue
+        case "STACKING_AREA": return '#2ecc71'; // Green
+        case "GENERAL_AREA": return '#f39c12'; // Yellow/Orange
+        default: return '#95a5a6'; // Gray
+    }
+};
+
+// --- End Utility Functions ---
+
+
 const QRCodeGenerator = () => {
   const [searchTerm, setSearchTerm] = useState('');
   const [results, setResults] = useState([]);
@@ -11,8 +30,9 @@ const QRCodeGenerator = () => {
   const [error, setError] = useState(null);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState(null);
-  const [scanHistory, setScanHistory] = useState([]); // NEW: State for scan history
-  
+  const [scanHistory, setScanHistory] = useState([]);
+  const [showModularCamera, setShowModularCamera] = useState(false);
+
   const searchInputRef = useRef(null);
   const resultsContainerRef = useRef(null);
   const suggestionsRef = useRef(null);
@@ -54,7 +74,1046 @@ const QRCodeGenerator = () => {
     checkCameraSupport();
   }, []);
 
-  // Quick Links Dropdown Component (Unchanged)
+  // Modular Camera Component
+  const ModularCamera = ({ onScanComplete, onClose }) => { // Renamed prop
+    const videoRef = useRef(null);
+    const canvasRef = useRef(null);
+    const streamRef = useRef(null);
+    const captureIntervalRef = useRef(null);
+    const workerRef = useRef(null); // Ref for persistent Tesseract worker
+
+    const [isScanning, setIsScanning] = useState(false);
+    const [isProcessing, setIsProcessing] = useState(false);
+    const [isLoadingCameras, setIsLoadingCameras] = useState(false);
+    const [availableCameras, setAvailableCameras] = useState([]);
+    const [selectedCamera, setSelectedCamera] = useState('');
+    const [cameraError, setCameraError] = useState('');
+    const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
+    const [lastScannedText, setLastScannedText] = useState('');
+    const [detectedText, setDetectedText] = useState('');
+    const [shouldStart, setShouldStart] = useState(false); 
+    
+    // NEW STATE: Holds the result object to display the QR code
+    const [scannedResult, setScannedResult] = useState(null); 
+
+    const camerasRef = useRef([]);
+    const selectedCameraRef = useRef('');
+
+    // Get available cameras
+    const getCameras = async () => {
+      if (!navigator.mediaDevices?.enumerateDevices) {
+        return [];
+      }
+
+      try {
+        setIsLoadingCameras(true);
+        // Request media permission once to ensure we get labels
+        await navigator.mediaDevices.getUserMedia({ video: true, audio: false }); 
+
+        const devices = await navigator.mediaDevices.enumerateDevices();
+        const videoDevices = devices.filter(device => device.kind === 'videoinput');
+        
+        const camerasList = videoDevices.map(device => ({
+          deviceId: device.deviceId,
+          label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
+        }));
+        
+        setAvailableCameras(camerasList);
+        camerasRef.current = camerasList;
+        
+        if (camerasList.length > 0 && !selectedCamera) {
+          // Attempt to select the back camera by default
+          const backCamera = camerasList.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('environment')) || camerasList[0];
+          setSelectedCamera(backCamera.deviceId);
+          selectedCameraRef.current = backCamera.deviceId;
+        }
+        return camerasList;
+      } catch (err) {
+        console.warn("Could not enumerate cameras, continuing with default access.", err);
+        return [];
+      } finally {
+        setIsLoadingCameras(false);
+      }
+    };
+
+    const stopCamera = () => {
+      console.log('Stopping camera...');
+      
+      if (streamRef.current) {
+        streamRef.current.getTracks().forEach(track => {
+          track.stop();
+        });
+        streamRef.current = null;
+      }
+      
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+        captureIntervalRef.current = null;
+      }
+      
+      // Cleanup Tesseract worker
+      if (workerRef.current) {
+        console.log('Terminating Tesseract worker...');
+        workerRef.current.terminate();
+        workerRef.current = null;
+      }
+      
+      // Reset all camera related states
+      setShouldStart(false); // Ensure we don't restart accidentally
+      setIsScanning(false);
+      setIsProcessing(false);
+      setCameraError('');
+      setVideoDimensions({ width: 0, height: 0 });
+      setLastScannedText('');
+      setDetectedText('');
+      setScannedResult(null); // CLEAR RESULT ON STOP
+      
+      if (videoRef.current) {
+        videoRef.current.srcObject = null;
+      }
+    };
+    
+    // Tesseract Worker Initialization (runs once on mount)
+    useEffect(() => {
+      getCameras();
+      
+      const initializeWorker = async () => {
+        console.log('Initializing Tesseract worker...');
+        try {
+            const worker = await Tesseract.createWorker('eng'); 
+            
+            await worker.setParameters({
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
+            });
+            
+            workerRef.current = worker;
+            console.log('Tesseract worker initialized and ready.');
+        } catch (error) {
+            console.error('Failed to initialize Tesseract worker:', error);
+            setCameraError('Failed to load OCR library. Check network and console for details.');
+        }
+      };
+      
+      initializeWorker();
+
+      // stopCamera is the cleanup function, which now terminates the worker
+      return () => stopCamera(); 
+    }, []);
+
+    // 1. Core function to initialize the video stream
+    const initVideo = async (cameraDeviceId) => {
+        try {
+            setCameraError('');
+            setIsLoadingCameras(true);
+            setScannedResult(null); // Clear previous result on start
+
+            if (!videoRef.current) {
+                console.error('Video ref not available in initVideo.');
+                setIsLoadingCameras(false);
+                setCameraError('Camera not ready. Please close and reopen the camera.');
+                return; 
+            }
+            
+            if (!canvasRef.current) {
+              const canvas = document.createElement('canvas');
+              canvasRef.current = canvas;
+            }
+
+            const constraints = {
+              video: {
+                width: { ideal: 1280 },
+                height: { ideal: 720 },
+                facingMode: 'environment' 
+              } 
+            };
+
+            const currentSelectedCamera = cameraDeviceId || selectedCamera || selectedCameraRef.current;
+            if (currentSelectedCamera && availableCameras.length > 0) {
+              constraints.video.deviceId = { exact: currentSelectedCamera };
+              delete constraints.video.facingMode;
+            }
+
+            console.log('Starting camera with constraints:', constraints);
+            const stream = await navigator.mediaDevices.getUserMedia(constraints);
+            
+            streamRef.current = stream;
+            videoRef.current.srcObject = stream;
+            
+            const video = videoRef.current;
+            
+            const waitForVideoReady = () => {
+              return new Promise((resolve, reject) => {
+                const timeout = setTimeout(() => {
+                  reject(new Error('Video not ready within timeout'));
+                }, 10000); 
+
+                const checkReadyState = () => {
+                  if (video.readyState >= 1) {
+                    clearTimeout(timeout);
+                    resolve();
+                    return;
+                  }
+                  setTimeout(checkReadyState, 100);
+                };
+
+                video.onloadedmetadata = () => {
+                  clearTimeout(timeout);
+                  resolve();
+                };
+
+                video.onerror = (err) => {
+                  clearTimeout(timeout);
+                  reject(new Error(`Video error: ${err}`));
+                };
+
+                checkReadyState();
+              });
+            };
+
+            await waitForVideoReady();
+            
+            try {
+              await video.play();
+            } catch (playErr) {
+              console.warn('Video play failed, continuing anyway:', playErr);
+            }
+            
+            setVideoDimensions({ 
+              width: video.videoWidth || 640, 
+              height: video.videoHeight || 480 
+            });
+            
+            setIsScanning(true);
+            setIsLoadingCameras(false);
+            startOCRCapturing();
+            
+            console.log('Camera started successfully');
+
+          } catch (err) {
+            console.error('Camera start error:', err);
+            setIsLoadingCameras(false);
+            stopCamera();
+            
+            let errorMessage = 'Cannot access camera: ';
+            
+            if (err.name === 'NotAllowedError') {
+              errorMessage = 'Camera permission denied. Please allow camera access in your browser settings.';
+            } else if (err.name === 'NotFoundError') {
+              errorMessage = 'No camera found on this device.';
+            } else if (err.name === 'NotReadableError') {
+              errorMessage = 'Camera is already in use by another application.';
+            } else if (err.name === 'OverconstrainedError') {
+              errorMessage = 'Camera constraints cannot be satisfied. Try a different camera.';
+            } else {
+              errorMessage += err.message;
+            }
+            
+            setCameraError(errorMessage);
+          }
+    };
+
+    // 2. Public function to trigger the camera start
+    const startCamera = () => {
+        setShouldStart(true);
+    };
+
+    // 3. Effect hook to wait for the video ref before calling initVideo
+    useEffect(() => {
+        if (shouldStart && videoRef.current) {
+            console.log('Video ref is now available. Initializing video stream...');
+            setShouldStart(false); // Reset start flag
+            initVideo(selectedCamera);
+        }
+    }, [shouldStart, selectedCamera]); 
+    
+    // 4. NEW: Effect to pause continuous scanning when a result is found
+    useEffect(() => {
+        if (scannedResult && captureIntervalRef.current) {
+            console.log('QR Code generated. Pausing continuous OCR scanning.');
+            clearInterval(captureIntervalRef.current);
+            captureIntervalRef.current = null;
+        } 
+        
+        // This is primarily for cleanup when the component unmounts,
+        // but it prevents memory leaks if interval is running.
+        return () => {
+             if (captureIntervalRef.current) {
+                 clearInterval(captureIntervalRef.current);
+                 captureIntervalRef.current = null;
+             }
+        };
+    }, [scannedResult]); // Only run when scannedResult changes
+
+    const startOCRCapturing = () => {
+      console.log('Starting OCR capturing...');
+      
+      if (captureIntervalRef.current) {
+        clearInterval(captureIntervalRef.current);
+      }
+      
+      // Interval set to 3s (3000ms)
+      captureIntervalRef.current = setInterval(() => {
+        console.log('--- OCR Interval Tick Attempt (3s) ---'); 
+        
+        // Skip scanning if a result is already displayed
+        if (scannedResult) {
+            console.log('Result active, skipping scan tick.');
+            return;
+        }
+        
+        if (!streamRef.current || !videoRef.current || isProcessing || !workerRef.current) {
+          return;
+        }
+        
+        captureAndProcessFrame();
+      }, 3000); // <-- INTERVAL SET TO 3 SECONDS
+    };
+
+    const captureAndProcessFrame = async () => {
+      const video = videoRef.current;
+      let canvas = canvasRef.current;
+      
+      if (isProcessing || !video || !streamRef.current || video.videoWidth === 0 || !workerRef.current) {
+        return;
+      }
+
+      // Important: Stop processing if a result is already shown
+      if (scannedResult) {
+          console.log('Already displaying result. Aborting frame processing.');
+          return;
+      }
+
+      if (!canvas) {
+        canvas = document.createElement('canvas');
+        canvasRef.current = canvas;
+      }
+
+      setIsProcessing(true);
+      setDetectedText('Scanning...'); 
+      
+      try {
+        const context = canvas.getContext('2d');
+        canvas.width = video.videoWidth;
+        canvas.height = video.videoHeight;
+        context.drawImage(video, 0, 0, canvas.width, canvas.height);
+
+        const { data: { text } } = await workerRef.current.recognize(canvas);
+
+        console.log('OCR Result:', text);
+        
+        if (text && text.trim()) {
+          const processedText = processOCRText(text);
+          setDetectedText(processedText || text.trim());
+          
+          if (processedText && processedText !== lastScannedText) {
+            console.log('Found new unique location:', processedText);
+            handleScannedText(processedText);
+            setLastScannedText(processedText);
+          } else if (processedText && processedText === lastScannedText) {
+            console.log('Location is the same, skipping update.');
+          }
+        } else {
+          setDetectedText('No text detected or recognized.');
+          setScannedResult(null); // Clear QR code if no text is found
+        }
+      } catch (err) {
+        console.error('OCR processing error:', err);
+        setDetectedText('Error processing image');
+        setScannedResult(null); // Clear QR code on error
+      } finally {
+        setIsProcessing(false);
+      }
+    };
+
+    const processOCRText = (text) => {
+      let cleanedText = text.trim()
+        .replace(/\s+/g, ' ')
+        .toUpperCase();
+      
+      const patterns = [
+        /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
+        /([A-Z])(\d+)\s+(\d+)([A-Z])/,
+        /([A-Z])-(\d+)\.(\d+)([A-Z])/,
+        /([A-Z])(\d+)(\d+)([A-Z])/,
+        /([A-Z])\s+(\d+)\s+(\d+)\s+([A-Z])/
+      ];
+      
+      for (const pattern of patterns) {
+        const match = cleanedText.match(pattern);
+        if (match) {
+          const [, letter, firstNum, secondNum, endingLetter] = match;
+          const result = `${letter}-${firstNum.replace(/-/g, '')}.${secondNum}${endingLetter}`;
+          return result;
+        }
+      }
+      
+      const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?|STG\.[A-Z]\d{2,3}/;
+      const locationMatch = cleanedText.match(locationPattern);
+      if (locationMatch) {
+        return locationMatch[0];
+      }
+      
+      return null;
+    };
+
+    // UPDATED: Pass text and the modal's state setter to the parent
+    const handleScannedText = (scannedText) => {
+      if (onScanComplete) {
+        onScanComplete(scannedText, setScannedResult);
+      }
+    };
+
+    const captureManual = () => {
+      if (!isScanning || isProcessing || !streamRef.current || scannedResult) {
+        // Prevent manual capture if already showing a result
+        if (scannedResult) {
+            alert("Clear the current result before scanning manually.");
+        }
+        return;
+      }
+      captureAndProcessFrame();
+    };
+
+    const switchCamera = async (deviceId) => {
+      setSelectedCamera(deviceId);
+      selectedCameraRef.current = deviceId;
+      if (isScanning) {
+        stopCamera();
+        setTimeout(() => setShouldStart(true), 500);
+      }
+    };
+
+    const handleClearResult = () => {
+        setScannedResult(null);
+        setDetectedText('');
+        setLastScannedText('');
+        // Restart continuous scanning when result is cleared
+        if (isScanning && !captureIntervalRef.current) {
+            startOCRCapturing();
+        }
+    }
+
+    const handleClose = () => {
+      stopCamera();
+      if (onClose) {
+        onClose();
+      }
+    };
+
+    return (
+      <div className="modular-camera-overlay">
+        <div className="modular-camera-container">
+          <div className="camera-header">
+            <h3>📷 Live Camera Scanner</h3>
+            <div className="camera-controls">
+              <button 
+                type="button" 
+                onClick={captureManual}
+                className="capture-button"
+                disabled={isProcessing || !isScanning || scannedResult} // Disable if result is shown
+              >
+                {isProcessing ? 'Processing...' : '📸 Capture Now'}
+              </button>
+              <button 
+                type="button" 
+                onClick={handleClose}
+                className="close-camera-button"
+              >
+                ✕ Close
+              </button>
+            </div>
+          </div>
+
+          <div className="camera-content-wrapper"> 
+            
+            <div className="video-container" style={{ display: isScanning ? 'block' : 'none' }}>
+              <video 
+                ref={videoRef} 
+                autoPlay 
+                playsInline
+                muted
+                className="camera-video"
+                key="camera-video-element"
+              />
+              
+              {/* Scan Overlay (Only show when actively scanning) */}
+              {isScanning && (
+                <div className="scan-overlay">
+                  <div className="scan-frame">
+                    <div className="scan-corner top-left"></div>
+                    <div className="scan-corner top-right"></div>
+                    <div className="scan-corner bottom-left"></div>
+                    <div className="scan-corner bottom-right"></div>
+                  </div>
+                  <p className="scan-message">Point camera at location text</p>
+                  <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
+                  
+                  {detectedText && (
+                    <div className="detected-text">
+                      <strong>Detected:</strong> {detectedText}
+                    </div>
+                  )}
+                  
+                  {isProcessing && (
+                    <div className="processing-indicator">
+                      <div className="spinner"></div>
+                      Reading text...
+                    </div>
+                  )}
+
+                  {/* NEW: Display the QR code if a result is found */}
+                  {scannedResult && (
+                      <div className="scanned-qr-code-display">
+                          <h4>✅ Code Found: {scannedResult.location}</h4>
+                          <div className="qr-code-wrapper-modal">
+                              {/* ADDED FALLBACK for robustness */}
+                              <QRCodeCanvas 
+                                value={scannedResult.referenceId || 'NO_REF_ID_FOUND'} 
+                                size={120} // Smaller size for modal
+                                level="H"
+                                includeMargin={true}
+                              />
+                          </div>
+                          <div className="qr-code-details-modal">
+                              <div className="location-modal">{scannedResult.location}</div>
+                              <div 
+                                className="type-modal" 
+                                style={{ color: getTypeColor(scannedResult.type) }}
+                              >
+                                  {getTypeDisplayName(scannedResult.type)}
+                              </div>
+                              <div className="reference-id-modal">Ref: {scannedResult.referenceId}</div>
+                          </div>
+                          <button 
+                            onClick={handleClearResult} 
+                            className="clear-result-button"
+                          >
+                            Clear Result & Resume Scan
+                          </button>
+                      </div>
+                  )}
+                  {/* END NEW DISPLAY */}
+                </div>
+              )}
+            </div>
+
+            {/* Camera Setup Controls (Visible only when NOT scanning) */}
+            {!isScanning && (
+                <div className="camera-setup">
+                    <div className="camera-selection">
+                        <label htmlFor="modular-camera-select">Select Camera:</label>
+                        <select 
+                          id="modular-camera-select"
+                          value={selectedCamera}
+                          onChange={(e) => switchCamera(e.target.value)}
+                          disabled={isLoadingCameras}
+                        >
+                          {isLoadingCameras ? (
+                            <option>Loading cameras...</option>
+                          ) : availableCameras.length === 0 ? (
+                            <option>No cameras detected</option>
+                          ) : (
+                            availableCameras.map(camera => (
+                              <option key={camera.deviceId} value={camera.deviceId}>
+                                {camera.label}
+                              </option>
+                            ))
+                          )}
+                        </select>
+                    </div>
+                    
+                    {/* The Start Button */}
+                    <button 
+                      type="button" 
+                      onClick={startCamera} // This sets shouldStart(true)
+                      className="start-camera-button"
+                      disabled={isLoadingCameras}
+                    >
+                      {isLoadingCameras ? 'Starting Camera...' : '🚀 Start Continuous Scan'}
+                    </button>
+                    
+                    {/* Retry Button */}
+                    {cameraError && cameraError.includes('not ready') && (
+                      <button 
+                        type="button" 
+                        onClick={startCamera}
+                        className="retry-camera-button"
+                      >
+                        🔄 Retry Starting Camera
+                      </button>
+                    )}
+                </div>
+            )}
+            
+            {/* Active Scan Controls/Status (Visible only when scanning) */}
+            {isScanning && (
+              <>
+                {/* Camera Switcher during active scan */}
+                {availableCameras.length > 1 && (
+                  <div className="active-camera-controls">
+                    <label>Switch Camera:</label>
+                    <select 
+                      value={selectedCamera}
+                      onChange={(e) => switchCamera(e.target.value)}
+                      className="camera-switcher"
+                      disabled={isLoadingCameras}
+                    >
+                      {availableCameras.map(camera => (
+                        <option key={camera.deviceId} value={camera.deviceId}>
+                          {camera.label}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                )}
+
+                <div className="camera-status">
+                  {scannedResult ? (
+                    <p className="scan-paused-message">
+                       ⏸️ Scan Paused (Clear Result to Resume)
+                    </p>
+                  ) : (
+                    <p>
+                      ✅ Camera Active • Scanning every 3 seconds
+                    </p>
+                  )}
+                  {detectedText && detectedText !== 'Scanning...' && detectedText !== 'No text detected or recognized.' && (
+                    <p className="text-change-info">
+                      🔄 Will auto-detect when text changes
+                    </p>
+                  )}
+                </div>
+              </>
+            )}
+
+            {cameraError && (
+              <div className="camera-error-message">
+                {cameraError}
+              </div>
+            )}
+
+          </div> 
+          {/* End camera-content-wrapper */}
+          
+          {/* Hidden canvas for OCR processing */}
+          <canvas 
+            ref={canvasRef} 
+            style={{ display: 'none' }}
+            key="hidden-canvas"
+          />
+
+        </div>
+        
+        <style jsx>{`
+          .modular-camera-overlay {
+            position: fixed;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            background: rgba(0, 0, 0, 0.8);
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            z-index: 1000;
+            padding: 1rem;
+          }
+
+          .modular-camera-container {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+            max-width: 800px;
+            width: 100%;
+            max-height: 90vh;
+            overflow-y: auto;
+          }
+
+          .camera-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 1.5rem;
+            background: #2c3e50;
+            color: white;
+            border-radius: 12px 12px 0 0;
+          }
+
+          .camera-header h3 {
+            margin: 0;
+            font-size: 1.3rem;
+          }
+
+          .camera-controls {
+            display: flex;
+            gap: 0.5rem;
+          }
+
+          .capture-button {
+            padding: 0.5rem 1rem;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+          }
+
+          .capture-button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+          }
+
+          .close-camera-button {
+            padding: 0.5rem 1rem;
+            background: #e74c3c;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+          }
+
+          .camera-content-wrapper { 
+             padding: 1.5rem; 
+          }
+
+          .camera-setup {
+            padding: 0; 
+            display: flex;
+            flex-direction: column;
+            gap: 1rem;
+          }
+
+          .camera-selection {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+          }
+
+          .camera-selection label {
+            font-weight: 600;
+            color: #2c3e50;
+          }
+
+          .camera-selection select {
+            padding: 0.75rem;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 1rem;
+          }
+
+          .start-camera-button {
+            padding: 1rem;
+            background: #8e44ad;
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+          }
+
+          .start-camera-button:hover:not(:disabled) {
+            background: #7d3c98;
+          }
+
+          .start-camera-button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+          }
+
+          .retry-camera-button {
+            padding: 0.75rem;
+            background: #f39c12;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-size: 1rem;
+            font-weight: 600;
+            cursor: pointer;
+            transition: background 0.3s;
+          }
+
+          .retry-camera-button:hover {
+            background: #e67e22;
+          }
+
+          .video-container {
+            position: relative;
+            width: 100%;
+            background: #000;
+            border-radius: 8px;
+            overflow: hidden;
+            margin-bottom: 1rem;
+            min-height: 200px; 
+          }
+
+          .camera-video {
+            width: 100%;
+            height: 400px;
+            display: block;
+            object-fit: cover;
+            background: #000;
+          }
+
+          .scan-overlay {
+            position: absolute;
+            top: 0;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            background: transparent;
+            color: white;
+            text-align: center;
+            padding: 1rem;
+            pointer-events: none;
+            /* Allow content to scroll if needed */
+            overflow-y: auto; 
+          }
+
+          .scan-frame {
+            width: 250px;
+            height: 100px;
+            border: 2px solid white;
+            border-radius: 8px;
+            margin-bottom: 1rem;
+            position: relative;
+          }
+
+          .scan-corner {
+            position: absolute;
+            width: 20px;
+            height: 20px;
+            border: 2px solid #00ff00;
+          }
+
+          .scan-corner.top-left {
+            top: -2px;
+            left: -2px;
+            border-right: none;
+            border-bottom: none;
+          }
+
+          .scan-corner.top-right {
+            top: -2px;
+            right: -2px;
+            border-left: none;
+            border-bottom: none;
+          }
+
+          .scan-corner.bottom-left {
+            bottom: -2px;
+            left: -2px;
+            border-right: none;
+            border-top: none;
+          }
+
+          .scan-corner.bottom-right {
+            bottom: -2px;
+            right: -2px;
+            border-left: none;
+            border-top: none;
+          }
+
+          .scan-message {
+            margin-bottom: 0.5rem;
+          }
+
+          .scan-hint {
+            font-size: 0.9rem;
+            opacity: 0.8;
+            margin-top: 0.5rem;
+          }
+
+          .detected-text {
+            background: rgba(0, 0, 0, 0.8);
+            padding: 0.75rem 1rem;
+            border-radius: 6px;
+            margin-top: 1rem;
+            font-size: 1rem;
+            border: 2px solid #3498db;
+            word-break: break-all;
+            pointer-events: auto;
+          }
+          
+          /* NEW QR CODE DISPLAY STYLES - FIXES */
+          .scanned-qr-code-display {
+            /* Position absolutely within scan-overlay */
+            position: absolute; 
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            
+            background: rgba(255, 255, 255, 0.98); /* Near opaque white */
+            padding: 1.5rem;
+            border-radius: 12px;
+            box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); /* Clear shadow for visibility */
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            pointer-events: auto;
+            max-width: 90%;
+            z-index: 10; /* Ensure it is above other overlay elements */
+          }
+
+          .scanned-qr-code-display h4 {
+            color: #2c3e50;
+            margin: 0 0 1rem 0;
+            font-size: 1.2rem;
+          }
+
+          .qr-code-details-modal {
+            margin-top: 0.75rem;
+            text-align: center;
+            color: #2c3e50;
+          }
+
+          .location-modal {
+            font-weight: 700;
+            font-size: 1rem;
+          }
+
+          .type-modal {
+            font-weight: 600;
+            font-size: 0.85rem;
+            margin: 0.25rem 0;
+          }
+
+          .reference-id-modal {
+            font-size: 0.75rem;
+            color: #7f8c8d;
+            word-break: break-all;
+          }
+
+          .clear-result-button {
+              margin-top: 1rem;
+              padding: 0.5rem 1rem;
+              background-color: #f39c12;
+              color: white;
+              border: none;
+              border-radius: 6px;
+              cursor: pointer;
+              font-weight: 600;
+              transition: background 0.2s;
+          }
+          .clear-result-button:hover {
+              background-color: #e67e22;
+          }
+          /* END NEW QR CODE DISPLAY STYLES */
+
+          .processing-indicator {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 1rem;
+            padding: 0.75rem 1rem;
+            background: rgba(0, 0, 0, 0.7);
+            border-radius: 20px;
+          }
+
+          .spinner {
+            width: 16px;
+            height: 16px;
+            border: 2px solid transparent;
+            border-top: 2px solid #00ff00;
+            border-radius: 50%;
+            animation: spin 1s linear infinite;
+          }
+
+          .active-camera-controls {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 1rem;
+            padding: 0.5rem;
+            background: #f8f9fa;
+            border-radius: 6px;
+          }
+
+          .active-camera-controls label {
+            font-weight: 600;
+            color: #2c3e50;
+            white-space: nowrap;
+          }
+
+          .camera-switcher {
+            padding: 0.5rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            background: white;
+          }
+          
+          .scan-paused-message {
+             background: #fcf8e3; /* Light yellow background */
+             color: #8a6d3b; /* Dark yellow/brown text */
+             padding: 0.5rem;
+             border-radius: 4px;
+          }
+
+          .camera-status {
+            padding: 1rem;
+            background: #d4edda;
+            color: #155724;
+            border-radius: 6px;
+            text-align: center;
+          }
+
+          .text-change-info {
+            margin: 0.5rem 0 0 0;
+            font-weight: 600;
+          }
+
+          .camera-error-message {
+            margin: 1rem;
+            padding: 1rem;
+            background: #f8d7da;
+            color: #721c24;
+            border-radius: 6px;
+            border-left: 4px solid #e74c3c;
+          }
+
+          @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+          }
+
+          @media (max-width: 768px) {
+            .modular-camera-overlay {
+              padding: 0.5rem;
+            }
+
+            .camera-header {
+              flex-direction: column;
+              gap: 1rem;
+              text-align: center;
+            }
+
+            .camera-controls {
+              width: 100%;
+              justify-content: center;
+            }
+
+            .camera-video {
+              height: 300px;
+            }
+
+            .active-camera-controls {
+              flex-direction: column;
+              align-items: stretch;
+            }
+          }
+        `}</style>
+      </div>
+    );
+  };
+
+  // Quick Links Dropdown Component
   const QuickLinksDropdown = () => {
     const [isOpen, setIsOpen] = useState(false);
     const dropdownRef = useRef(null);
@@ -113,7 +1172,7 @@ const QRCodeGenerator = () => {
     );
   };
 
-  // Utility functions (Unchanged)
+  // Utility functions
   const generateRange = (prefix, start, end) => {
     const locations = [];
     for (let i = start; i <= end; i++) {
@@ -173,20 +1232,8 @@ const QRCodeGenerator = () => {
     return found ? { referenceID: found.referenceID, type: found.type } : null;
   };
   
-  const getTypeDisplayName = (type) => { 
-    return type.replace(/_/g, ' ').toLowerCase().split(' ').map(word => word.charAt(0).toUpperCase() + word.slice(1)).join(' ');
-  };
-  
-  const getTypeColor = (type) => {
-    switch (type) {
-        case "STAGING_AREA": return '#3498db'; // Blue
-        case "STACKING_AREA": return '#2ecc71'; // Green
-        case "GENERAL_AREA": return '#f39c12'; // Yellow/Orange
-        default: return '#95a5a6'; // Gray
-    }
-  };
 
-  // Load data on component mount (Unchanged)
+  // Load data on component mount
   useEffect(() => {
     const loadData = () => {
       const newAreas = {
@@ -225,7 +1272,7 @@ const QRCodeGenerator = () => {
     searchInputRef.current?.focus();
   }, []);
 
-  // Update suggestions when search term changes (Unchanged)
+  // Update suggestions when search term changes
   useEffect(() => {
     if (!searchTerm.trim()) {
       setSuggestions([]);
@@ -248,7 +1295,7 @@ const QRCodeGenerator = () => {
     setSuggestions(filtered);
   }, [searchTerm, areas]);
 
-  // Close suggestions when clicking outside (Unchanged)
+  // Close suggestions when clicking outside
   useEffect(() => {
     const handleClickOutside = (event) => {
       if (suggestionsRef.current && !suggestionsRef.current.contains(event.target)) {
@@ -262,7 +1309,7 @@ const QRCodeGenerator = () => {
     };
   }, []);
 
-  // Handle search submission (Unchanged)
+  // Handle search submission
   const handleSearch = (e) => {
     e.preventDefault();
     setError(null);
@@ -320,7 +1367,7 @@ const QRCodeGenerator = () => {
     }
   };
 
-  // Handle suggestion selection with delay (Unchanged)
+  // Handle suggestion selection with delay
   const handleSuggestionSelect = (suggestion, e) => {
     e.preventDefault();
     e.stopPropagation();
@@ -350,7 +1397,7 @@ const QRCodeGenerator = () => {
     }
   };
 
-  // NEW: Handle selection from history list
+  // Handle selection from history list
   const handleHistorySelect = (historyItem) => {
     setSearchTerm(historyItem.location);
     setError(null);
@@ -371,6 +1418,60 @@ const QRCodeGenerator = () => {
     setShowSuggestions(false);
   };
 
+  // UPDATED: Handle text detection from modular camera
+  // This function now also updates the modal's state setter to the parent's component's state
+  const handleCameraScanComplete = (scannedText, updateModalResult) => {
+    setSearchTerm(scannedText); 
+
+    const formattedInputs = formatInput(scannedText);
+    let finalResult = null; 
+
+    if (formattedInputs.length > 0) {
+        const input = formattedInputs[0];
+        const result = findReferenceId(input);
+        
+        if (result) {
+            finalResult = {
+                location: input,
+                referenceId: result.referenceID,
+                type: result.type
+            };
+        }
+    }
+
+    if (finalResult) {
+        // 1. Update parent component's state (for main screen and history)
+        setResults([finalResult]);
+        setError(null);
+        
+        setScanHistory(prevHistory => {
+          const newEntry = {
+            location: finalResult.location, 
+            type: finalResult.type,
+            timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+          };
+          const filteredHistory = prevHistory.filter(item => item.location !== newEntry.location);
+          return [newEntry, ...filteredHistory].slice(0, 10);
+        });
+        
+        // 2. Update the modular camera's state to show the QR code
+        // This is the key call: it sets the `scannedResult` state in ModularCamera
+        updateModalResult(finalResult);
+
+    } else {
+        // Clear search results and modal result if not found
+        setResults([]);
+        // This is the key call: it sets the `scannedResult` state to null in ModularCamera (Hiding the QR code)
+        updateModalResult(null);
+    }
+  };
+
+
+  // Handle closing the modal camera
+  const handleCloseModularCamera = () => {
+    setShowModularCamera(false);
+  };
+
   const handleClear = () => { 
     setSearchTerm('');
     setResults([]);
@@ -380,477 +1481,30 @@ const QRCodeGenerator = () => {
 
   const handlePrint = () => { window.print(); };
 
-  // Text Scanner Component - UPDATED VERSION
-  const TextScanner = () => {
-    const videoRef = useRef(null);
-    const canvasRef = useRef(null);
-    const streamRef = useRef(null);
-    const captureIntervalRef = useRef(null);
-
-    const [isScanning, setIsScanning] = useState(false);
-    const [isProcessing, setIsProcessing] = useState(false);
-    const [isLoadingCameras, setIsLoadingCameras] = useState(false);
-    const [availableCameras, setAvailableCameras] = useState([]);
-    const [selectedCamera, setSelectedCamera] = useState('');
-    const [cameraError, setCameraError] = useState('');
-    const [videoDimensions, setVideoDimensions] = useState({ width: 0, height: 0 });
-    const [lastScannedText, setLastScannedText] = useState(''); // NEW: For debouncing
-
-    const camerasRef = useRef([]);
-    const selectedCameraRef = useRef('');
-    
-    // Get available cameras (Unchanged)
-    const getCameras = async () => {
-      if (!navigator.mediaDevices?.enumerateDevices) {
-        return [];
-      }
-
-      try {
-        setIsLoadingCameras(true);
-        await navigator.mediaDevices.getUserMedia({ video: true, audio: false });
-
-        const devices = await navigator.mediaDevices.enumerateDevices();
-        const videoDevices = devices.filter(device => device.kind === 'videoinput');
-        
-        const camerasList = videoDevices.map(device => ({
-          deviceId: device.deviceId,
-          label: device.label || `Camera ${videoDevices.indexOf(device) + 1}`
-        }));
-        
-        setAvailableCameras(camerasList);
-        camerasRef.current = camerasList;
-        
-        if (camerasList.length > 0 && !selectedCamera) {
-          const backCamera = camerasList.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('environment')) || camerasList[0];
-          setSelectedCamera(backCamera.deviceId);
-          selectedCameraRef.current = backCamera.deviceId;
-        }
-        return camerasList;
-      } catch (err) {
-        console.warn("Could not enumerate cameras, continuing with default access.", err);
-        return [];
-      } finally {
-        setIsLoadingCameras(false);
-      }
-    };
-
-    const stopCamera = () => {
-      console.log('Stopping camera...');
-      
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop());
-        streamRef.current = null;
-      }
-      
-      if (captureIntervalRef.current) {
-        clearInterval(captureIntervalRef.current);
-        captureIntervalRef.current = null;
-      }
-      
-      setIsScanning(false);
-      setIsProcessing(false);
-      setCameraError('');
-      setVideoDimensions({ width: 0, height: 0 });
-      setLastScannedText('');
-      
-      if (videoRef.current) {
-        videoRef.current.srcObject = null;
-      }
-    };
-    
-    // Cleanup on unmount (Unchanged)
-    useEffect(() => {
-        getCameras();
-        return () => stopCamera();
-    }, []);
-
-    const startCamera = async () => {
-      // ... (Camera setup logic remains the same) ...
-      try {
-        setError(null);
-        setCameraError('');
-        setIsLoadingCameras(true);
-
-        stopCamera(); 
-        await new Promise(resolve => setTimeout(resolve, 300)); 
-
-        if (!videoRef.current || !canvasRef.current) {
-          setCameraError('Camera elements not ready. Please try again.');
-          setIsLoadingCameras(false);
-          return;
-        }
-
-        const constraints = {
-          video: {
-            width: { ideal: 1280 },
-            height: { ideal: 720 },
-            facingMode: 'environment' 
-          } 
-        };
-
-        const currentSelectedCamera = selectedCamera || selectedCameraRef.current;
-        if (currentSelectedCamera && availableCameras.length > 0) {
-          constraints.video.deviceId = { exact: currentSelectedCamera };
-          delete constraints.video.facingMode;
-        }
-
-        const stream = await navigator.mediaDevices.getUserMedia(constraints);
-        
-        streamRef.current = stream;
-        videoRef.current.srcObject = stream;
-        const video = videoRef.current;
-        
-        const attemptPlay = () => {
-            if (video.readyState >= 1) { 
-                video.play().then(() => {
-                    setVideoDimensions({ width: video.videoWidth, height: video.videoHeight });
-                    
-                    setIsScanning(true);
-                    setIsLoadingCameras(false);
-                    startOCRCapturing();
-                    
-                }).catch(err => {
-                    console.error('Video Playback Error:', err);
-                    setCameraError('Video failed to play. Check browser security settings.');
-                    stopCamera();
-                });
-            } else {
-                video.onloadedmetadata = () => {
-                     attemptPlay(); 
-                     video.onloadedmetadata = null; 
-                };
-            }
-        };
-
-        attemptPlay();
-
-      } catch (err) {
-        console.error('Camera start error:', err);
-        setIsLoadingCameras(false);
-        stopCamera();
-        
-        let errorMessage = 'Cannot access camera: ';
-        
-        if (err.name === 'NotAllowedError') {
-          errorMessage = 'Camera permission denied. Please allow camera access in your browser settings.';
-        } else if (err.name === 'NotFoundError') {
-          errorMessage = 'No camera found on this device.';
-        } else if (err.name === 'NotReadableError') {
-          errorMessage = 'Camera is already in use by another application.';
-        } else {
-          errorMessage += err.message;
-        }
-        
-        setCameraError(errorMessage);
-        setError(errorMessage);
-      }
-    };
-
-    // UPDATED: Capture interval changed to 1.5 seconds
-    const startOCRCapturing = () => {
-      console.log('Starting OCR capturing...');
-      
-      if (captureIntervalRef.current) {
-        clearInterval(captureIntervalRef.current);
-      }
-      
-      captureIntervalRef.current = setInterval(() => {
-        if (!streamRef.current || !videoRef.current || isProcessing) {
-          return;
-        }
-        
-        if (videoRef.current.readyState === videoRef.current.HAVE_ENOUGH_DATA) {
-          captureAndProcessFrame();
-        }
-      }, 1500); // <-- 1500ms for faster capture
-    };
-
-    // UPDATED: Added debouncing logic
-    const captureAndProcessFrame = async () => {
-      const video = videoRef.current;
-      const canvas = canvasRef.current;
-      
-      if (isProcessing || !video || !canvas || !streamRef.current || video.videoWidth === 0) {
-        return;
-      }
-
-      setIsProcessing(true);
-      
-      try {
-        const context = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
-        context.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-        const { data: { text } } = await Tesseract.recognize(
-          canvas,
-          'eng',
-          { 
-            tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
-          }
-        );
-
-        console.log('OCR Result:', text);
-        
-        if (text && text.trim()) {
-          const processedText = processOCRText(text);
-          
-          if (processedText && processedText !== lastScannedText) {
-            console.log('Found new unique location:', processedText);
-            handleScannedText(processedText);
-            setLastScannedText(processedText);
-          } else if (processedText && processedText === lastScannedText) {
-             console.log('Location is the same, skipping update.');
-          }
-        }
-      } catch (err) {
-        console.error('OCR processing error:', err);
-      } finally {
-        setIsProcessing(false);
-      }
-    };
-
-    const processOCRText = (text) => {
-      let cleanedText = text.trim()
-        .replace(/\s+/g, ' ')
-        .toUpperCase();
-      
-      const patterns = [
-        /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
-        /([A-Z])(\d+)\s+(\d+)([A-Z])/,
-        /([A-Z])-(\d+)\.(\d+)([A-Z])/,
-        /([A-Z])(\d+)(\d+)([A-Z])/,
-        /([A-Z])\s+(\d+)\s+(\d+)\s+([A-Z])/
-      ];
-      
-      for (const pattern of patterns) {
-        const match = cleanedText.match(pattern);
-        if (match) {
-          const [, letter, firstNum, secondNum, endingLetter] = match;
-          const result = `${letter}-${firstNum.replace(/-/g, '')}.${secondNum}${endingLetter}`;
-          return result;
-        }
-      }
-      
-      const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?|STG\.[A-Z]\d{2,3}/;
-      const locationMatch = cleanedText.match(locationPattern);
-      if (locationMatch) {
-        return locationMatch[0];
-      }
-      
-      return null;
-    };
-
-    // UPDATED: Logic to handle search, update history, and NOT stop the camera
-    const handleScannedText = (scannedText) => {
-      // Set the search term for the input box
-      setSearchTerm(scannedText); 
-
-      const formattedInputs = formatInput(scannedText);
-      const newResults = [];
-
-      formattedInputs.forEach(input => {
-        const result = findReferenceId(input);
-        if (result) {
-          newResults.push({
-            location: input,
-            referenceId: result.referenceID,
-            type: result.type
-          });
-        }
-      });
-
-      if (newResults.length > 0) {
-        const currentResult = newResults[0];
-        
-        // Update main results UI
-        setResults(newResults);
-        setError(null);
-        
-        // Update history
-        setScanHistory(prevHistory => {
-            const newEntry = {
-                location: currentResult.location, 
-                type: currentResult.type,
-                timestamp: new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
-            };
-            
-            // Filter out existing duplicates and keep history limited to 10
-            const filteredHistory = prevHistory.filter(item => item.location !== newEntry.location);
-            
-            return [newEntry, ...filteredHistory].slice(0, 10);
-        });
-
-      } else {
-        // Only set error if it's a new, invalid scan
-        // setError(`No matching locations found for: ${scannedText}`);
-      }
-      
-      // REMOVED: stopCamera() is no longer called here
-    };
-
-    const captureManual = () => {
-      if (!isScanning || isProcessing || !streamRef.current) {
-        return;
-      }
-      captureAndProcessFrame();
-    };
-
-    const switchCamera = async (deviceId) => {
-      setSelectedCamera(deviceId);
-      selectedCameraRef.current = deviceId;
-      if (isScanning) {
-        stopCamera();
-        setTimeout(() => startCamera(), 500);
-      }
-    };
-
-    return (
-      <div className="text-scanner">
-        
-        <div style={{ display: 'none' }}>
-          <canvas ref={canvasRef} /> 
-        </div>
-
-        {/* Camera View */}
-        <div className={`scanner-container ${isScanning ? 'is-scanning' : 'is-hidden'}`}>
-          <div className="scanner-header">
-            <h3>✅ Camera Active</h3>
-            <div className="scanner-controls">
-              {availableCameras.length > 1 && (
-                <select 
-                  value={selectedCamera}
-                  onChange={(e) => switchCamera(e.target.value)}
-                  className="camera-switcher"
-                >
-                  {availableCameras.map(camera => (
-                    <option key={camera.deviceId} value={camera.deviceId}>
-                      {camera.label}
-                    </option>
-                  ))}
-                </select>
-              )}
-              <button 
-                type="button" 
-                onClick={captureManual}
-                className="capture-button"
-                disabled={isProcessing}
-              >
-                {isProcessing ? 'Processing...' : '📸 Capture Now'}
-              </button>
-              <button 
-                type="button" 
-                onClick={stopCamera}
-                className="stop-scan-button"
-              >
-                ✕ Stop Camera
-              </button>
-            </div>
-          </div>
-          
-          <div className="video-display-container">
-            <div className="video-wrapper">
-              <video 
-                ref={videoRef} 
-                srcObject={streamRef.current}
-                autoPlay 
-                playsInline
-                muted
-                className="camera-video"
-                key="camera-display" 
-              />
-              <div className="scan-overlay">
-                <div className="scan-frame">
-                  <div className="scan-corner top-left"></div>
-                  <div className="scan-corner top-right"></div>
-                  <div className="scan-corner bottom-left"></div>
-                  <div className="scan-corner bottom-right"></div>
-                </div>
-                <p>Point camera at location text</p>
-                <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
-                {isProcessing && (
-                  <div className="processing-indicator">
-                    <div className="spinner"></div>
-                    Reading text...
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
-          
-          <div className="scanner-status">
-            <p>✅ Camera is running • Scanning every 1.5 seconds</p>
-            <p className="video-debug">
-              Video: {videoDimensions.width}x{videoDimensions.height} • 
-              Stream: {streamRef.current?.active ? 'Active' : 'Inactive'}
-            </p>
-          </div>
-        </div>
-        
-        {/* Start Button */}
-        {!isScanning ? (
-          <div className="scan-options">
-            {cameraSupported ? (
-              <>
-                <div className="camera-selection">
-                  <label htmlFor="camera-select">Select Camera:</label>
-                  <select 
-                    id="camera-select"
-                    value={selectedCamera}
-                    onChange={(e) => switchCamera(e.target.value)}
-                    disabled={isLoadingCameras}
-                  >
-                    {isLoadingCameras ? (
-                      <option>Loading cameras...</option>
-                    ) : availableCameras.length === 0 ? (
-                      <option>No cameras detected</option>
-                    ) : (
-                      availableCameras.map(camera => (
-                        <option key={camera.deviceId} value={camera.deviceId}>
-                          {camera.label}
-                        </option>
-                      ))
-                    )}
-                  </select>
-                </div>
-                <button 
-                  type="button" 
-                  onClick={startCamera}
-                  className="scan-button"
-                  disabled={isLoadingCameras}
-                >
-                  {isLoadingCameras ? 'Starting Camera...' : '📷 Start Continuous Scan'}
-                </button>
-                {cameraError && (
-                  <div className="camera-error-message">
-                    {cameraError}
-                  </div>
-                )}
-              </>
-            ) : (
-              <div className="camera-not-supported">
-                <p>Camera not supported in this environment</p>
-              </div>
-            )}
-          </div>
-        ) : null}
-      </div>
-    );
-  };
-  
-
   return (
     <div className="qr-generator-container">
       <header className="qr-generator-header">
         <h1>DFX3 Station Codes</h1>
-        <p>Updated on 4/20/25 (by mvvlasc)</p>
+        <p>Updated on 11/28/25 (by mvvlasc)</p>
         <QuickLinksDropdown />
+        
+        {/* Button to open modular camera */}
+        <button 
+          className="open-modular-camera-button"
+          onClick={() => setShowModularCamera(true)}
+        >
+          Camera Text Scanner
+        </button>
       </header>
 
-      {/* TOP SECTION: Camera/Scanner UI */}
-      <TextScanner />
+      {/* Render modular camera when needed */}
+      {showModularCamera && (
+        <ModularCamera 
+          onScanComplete={handleCameraScanComplete}
+          onClose={handleCloseModularCamera}
+        />
+      )}
 
-      {/* BOTTOM SECTION: Search, History, and Results */}
       <div className="qr-generator-content">
         <form onSubmit={handleSearch} className="search-form">
           <div className="search-input-container" ref={suggestionsRef}>
@@ -909,7 +1563,7 @@ const QRCodeGenerator = () => {
           </div>
         </form>
 
-        {/* NEW: Scan History Display */}
+        {/* Scan History Display */}
         {scanHistory.length > 0 && (
             <div className="scan-history-container">
                 <h3>Recent Scans (Tap to Search)</h3>
@@ -928,8 +1582,6 @@ const QRCodeGenerator = () => {
                 </div>
             </div>
         )}
-        {/* END Scan History */}
-
 
         {error && <div className="error-message">{error}</div>}
 
@@ -971,16 +1623,6 @@ const QRCodeGenerator = () => {
       </div>
 
       <style jsx>{`
-        /* 🛑 NEW CSS FOR THE CAMERA FIX 🛑 */
-        .scanner-container.is-hidden {
-          display: none;
-        }
-
-        .scanner-container.is-scanning {
-          display: block;
-        }
-        /* 🛑 END NEW CSS 🛑 */
-
         .qr-generator-container {
           max-width: 1200px;
           margin: 0 auto;
@@ -1005,7 +1647,26 @@ const QRCodeGenerator = () => {
           margin-bottom: 1rem;
         }
 
-        /* Quick Links Styles (Unchanged) */
+        .open-modular-camera-button {
+          margin-top: 1rem;
+          padding: 1rem 1.5rem;
+          background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+          color: white;
+          border: none;
+          border-radius: 8px;
+          font-size: 1.1rem;
+          font-weight: 600;
+          cursor: pointer;
+          transition: all 0.3s ease;
+          box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
+        }
+
+        .open-modular-camera-button:hover {
+          transform: translateY(-2px);
+          box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+
+        /* Quick Links Styles */
         .quick-links-container {
           position: relative;
           display: inline-block;
@@ -1120,278 +1781,6 @@ const QRCodeGenerator = () => {
           color: #777;
         }
         
-        /* Text Scanner Styles */
-        .text-scanner {
-          margin-bottom: 1rem; /* Adjust space between scanner and search */
-        }
-
-        .scan-options {
-          display: flex;
-          flex-direction: column;
-          gap: 1rem;
-          margin-bottom: 2rem; /* Give space before search form */
-        }
-
-        .camera-selection {
-          display: flex;
-          flex-direction: column;
-          gap: 0.5rem;
-        }
-
-        .camera-selection label {
-          font-weight: 600;
-          color: #2c3e50;
-        }
-
-        .camera-selection select {
-          padding: 0.5rem;
-          border: 1px solid #ddd;
-          border-radius: 4px;
-          background: white;
-        }
-
-        .scan-button {
-          width: 100%;
-          padding: 1rem;
-          background-color: #8e44ad;
-          color: white;
-          border: none;
-          border-radius: 8px;
-          font-size: 1rem;
-          font-weight: 600;
-          cursor: pointer;
-          transition: background-color 0.3s;
-        }
-
-        .scan-button:hover:not(.scan-button:disabled) {
-          background-color: #7d3c98;
-        }
-
-        .scan-button:disabled {
-          background-color: #95a5a6;
-          cursor: not-allowed;
-        }
-
-        .camera-error-message {
-          color: #e74c3c;
-          background-color: #fadbd8;
-          padding: 0.75rem;
-          border-radius: 4px;
-          border-left: 4px solid #e74c3c;
-          font-size: 0.9rem;
-          margin-top: 0.5rem;
-        }
-
-        .camera-not-supported {
-          padding: 1rem;
-          background-color: #f8d7da;
-          color: #721c24;
-          border-radius: 8px;
-          text-align: center;
-        }
-
-        .scanner-container {
-          background: white;
-          border-radius: 8px;
-          box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-          overflow: hidden;
-        }
-
-        .scanner-header {
-          display: flex;
-          justify-content: space-between;
-          align-items: center;
-          padding: 1rem;
-          background-color: #34495e;
-          color: white;
-          flex-wrap: wrap;
-          gap: 1rem;
-        }
-
-        .scanner-header h3 {
-          margin: 0;
-          font-size: 1.1rem;
-        }
-
-        .scanner-controls {
-          display: flex;
-          gap: 0.5rem;
-          align-items: center;
-          flex-wrap: wrap;
-        }
-
-        .camera-switcher {
-          padding: 0.25rem 0.5rem;
-          border: 1px solid #ddd;
-          border-radius: 4px;
-          background: white;
-          color: #2c3e50;
-          font-size: 0.8rem;
-        }
-
-        .capture-button {
-          padding: 0.5rem 1rem;
-          background-color: #27ae60;
-          color: white;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-weight: 600;
-          font-size: 0.9rem;
-        }
-
-        .capture-button:disabled {
-          background-color: #95a5a6;
-          cursor: not-allowed;
-        }
-
-        .stop-scan-button {
-          padding: 0.5rem 1rem;
-          background-color: #e74c3c;
-          color: white;
-          border: none;
-          border-radius: 4px;
-          cursor: pointer;
-          font-weight: 600;
-          font-size: 0.9rem;
-        }
-
-        .stop-scan-button:hover {
-          background-color: #c0392b;
-        }
-
-        /* VIDEO DISPLAY */
-        .video-display-container {
-          padding: 1rem;
-          background: #f8f9fa;
-          border-radius: 8px;
-          margin: 1rem;
-        }
-
-        .video-wrapper {
-          position: relative;
-          width: 100%;
-          max-width: 500px;
-          margin: 0 auto;
-          background: #000;
-          border-radius: 8px;
-          overflow: hidden;
-          min-height: 400px;
-        }
-
-        .camera-video {
-          width: 100%;
-          height: 400px;
-          display: block;
-          background: #000;
-          object-fit: cover;
-        }
-
-        .scan-overlay {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          bottom: 0;
-          display: flex;
-          flex-direction: column;
-          justify-content: center;
-          align-items: center;
-          background: transparent;
-          color: white;
-          text-align: center;
-          padding: 1rem;
-          pointer-events: none;
-        }
-
-        .scan-frame {
-          width: 250px;
-          height: 100px;
-          border: 2px solid white;
-          border-radius: 8px;
-          margin-bottom: 1rem;
-          position: relative;
-        }
-
-        .scan-corner {
-          position: absolute;
-          width: 20px;
-          height: 20px;
-          border: 2px solid #00ff00;
-        }
-
-        .scan-corner.top-left {
-          top: -2px;
-          left: -2px;
-          border-right: none;
-          border-bottom: none;
-        }
-
-        .scan-corner.top-right {
-          top: -2px;
-          right: -2px;
-          border-left: none;
-          border-bottom: none;
-        }
-
-        .scan-corner.bottom-left {
-          bottom: -2px;
-          left: -2px;
-          border-right: none;
-          border-top: none;
-        }
-
-        .scan-corner.bottom-right {
-          bottom: -2px;
-          right: -2px;
-          border-left: none;
-          border-top: none;
-        }
-
-        .scan-hint {
-          font-size: 0.9rem;
-          opacity: 0.8;
-          margin-top: 0.5rem;
-        }
-
-        .processing-indicator {
-          display: flex;
-          align-items: center;
-          gap: 0.5rem;
-          margin-top: 1rem;
-          padding: 0.5rem 1rem;
-          background: rgba(0, 0, 0, 0.7);
-          border-radius: 20px;
-        }
-
-        .spinner {
-          width: 16px;
-          height: 16px;
-          border: 2px solid transparent;
-          border-top: 2px solid #00ff00;
-          border-radius: 50%;
-          animation: spin 1s linear infinite;
-        }
-
-        .scanner-status {
-          padding: 0.5rem 1rem;
-          background-color: #d4edda;
-          color: #155724;
-          text-align: center;
-          border-top: 1px solid #c3e6cb;
-        }
-
-        .video-debug {
-          font-size: 0.8rem;
-          opacity: 0.7;
-          margin: 0.25rem 0 0 0;
-        }
-
-        @keyframes spin {
-          0% { transform: rotate(0deg); }
-          100% { transform: rotate(360deg); }
-        }
-
         .suggestions-dropdown {
           position: absolute;
           top: 100%;
@@ -1443,7 +1832,7 @@ const QRCodeGenerator = () => {
           border-left: 4px solid #e74c3c;
         }
 
-        /* NEW: Scan History Styles */
+        /* Scan History Styles */
         .scan-history-container {
             margin-top: 1.5rem;
             padding: 1rem;
@@ -1491,7 +1880,6 @@ const QRCodeGenerator = () => {
             font-size: 0.75rem;
             color: #7f8c8d;
         }
-        /* END Scan History Styles */
         
         .results-container {
           margin-top: 2rem;
@@ -1603,37 +1991,6 @@ const QRCodeGenerator = () => {
             flex-direction: column;
           }
           
-          .scanner-header {
-            flex-direction: column;
-            gap: 1rem;
-            text-align: center;
-          }
-          
-          .scanner-controls {
-            width: 100%;
-            justify-content: center;
-          }
-          
-          .camera-switcher {
-            width: 100%;
-            margin-bottom: 0.5rem;
-          }
-          
-          /* Mobile-Optimized Layout: Constrain camera size */
-          .camera-video {
-            height: 250px; /* Smaller height for top-half display */
-          }
-          
-          .video-wrapper {
-            min-height: 250px;
-          }
-          
-          .scan-frame {
-            width: 200px;
-            height: 80px;
-          }
-          /* End Mobile-Optimized Layout */
-
           .qr-code-item {
             flex-direction: column;
             gap: 1rem;
