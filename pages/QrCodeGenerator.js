@@ -80,7 +80,7 @@ const QRCodeGenerator = () => {
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
     const captureIntervalRef = useRef(null);
-    const workerRef = useRef(null); 
+    const workerRef = useRef(null); // Ref for Tesseract worker
 
     const [isScanning, setIsScanning] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -98,6 +98,32 @@ const QRCodeGenerator = () => {
 
     const camerasRef = useRef([]);
     const selectedCameraRef = useRef('');
+
+    // --- Tesseract Initialization ---
+    const initializeTesseractWorker = async () => {
+        if (workerRef.current) return; // Already initialized or in use
+
+        console.log('Initializing Tesseract worker...');
+        setDetectedText('Loading OCR engine...'); 
+        
+        try {
+            const worker = await Tesseract.createWorker('eng'); 
+            
+            await worker.setParameters({
+                // Optimized whitelist for location codes
+                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._ '
+            });
+            
+            workerRef.current = worker;
+            console.log('Tesseract worker initialized and ready.');
+            setDetectedText(''); // Clear message after success
+        } catch (error) {
+            console.error('Failed to initialize Tesseract worker:', error);
+            setCameraError('Failed to load OCR library. Check network and console for details.');
+            throw error; // Propagate the error to initVideo
+        }
+    };
+    // --- End Tesseract Initialization ---
 
     // Get available cameras
     const getCameras = async () => {
@@ -129,9 +155,7 @@ const QRCodeGenerator = () => {
               selectedCameraRef.current = backCamera.deviceId;
           }
 
-          // *** CHANGE 1: Automatically trigger the start sequence if a camera is available ***
           setShouldStart(true); 
-          // *** END CHANGE 1 ***
         }
 
         return camerasList;
@@ -139,9 +163,7 @@ const QRCodeGenerator = () => {
         console.warn("Could not enumerate cameras, continuing with default access.", err);
         return [];
       } finally {
-        // NOTE: We keep isLoadingCameras as true if camerasList is empty until an error is set
-        // to show a status, but for this component, we set it to false here.
-        setIsLoadingCameras(false);
+        // Keep loading true, as video is not yet streaming
       }
     };
 
@@ -160,7 +182,7 @@ const QRCodeGenerator = () => {
         captureIntervalRef.current = null;
       }
       
-      // Cleanup Tesseract worker
+      // Cleanup Tesseract worker 
       if (workerRef.current) {
         console.log('Terminating Tesseract worker...');
         workerRef.current.terminate();
@@ -182,39 +204,18 @@ const QRCodeGenerator = () => {
       }
     };
     
-    // Tesseract Worker Initialization (runs once on mount)
+    // 1. Initial useEffect: Only for cleanup and initial camera check
     useEffect(() => {
-      setIsLoadingCameras(true); // Set loading while we detect cameras and worker
-      
+      setIsLoadingCameras(true); 
       getCameras();
       
-      const initializeWorker = async () => {
-        console.log('Initializing Tesseract worker...');
-        try {
-            const worker = await Tesseract.createWorker('eng'); 
-            
-            await worker.setParameters({
-                tessedit_char_whitelist: 'ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789- .'
-            });
-            
-            workerRef.current = worker;
-            console.log('Tesseract worker initialized and ready.');
-        } catch (error) {
-            console.error('Failed to initialize Tesseract worker:', error);
-            setCameraError('Failed to load OCR library. Check network and console for details.');
-        }
-      };
-      
-      initializeWorker();
-
       return () => stopCamera(); 
     }, []);
 
-    // 1. Core function to initialize the video stream
+    // 2. Core function to initialize the video stream
     const initVideo = async (cameraDeviceId) => {
         try {
             setCameraError('');
-            // NOTE: setIsLoadingCameras is kept true until video starts playing or fails
             setScannedResult(null); 
 
             if (!videoRef.current) {
@@ -224,6 +225,9 @@ const QRCodeGenerator = () => {
                 return; 
             }
             
+            // Ensure Tesseract worker is initialized/re-initialized here
+            await initializeTesseractWorker();
+
             if (!canvasRef.current) {
               const canvas = document.createElement('canvas');
               canvasRef.current = canvas;
@@ -246,6 +250,15 @@ const QRCodeGenerator = () => {
             console.log('Starting camera with constraints:', constraints);
             const stream = await navigator.mediaDevices.getUserMedia(constraints);
             
+            // --- FIX: Check for unmount after async call resolves to prevent TypeError ---
+            if (!videoRef.current) {
+                console.log('Component unmounted during getUserMedia. Aborting stream assignment.');
+                // Stop the stream tracks to turn off the camera
+                stream.getTracks().forEach(track => track.stop());
+                return; 
+            }
+            // --- END FIX ---
+
             streamRef.current = stream;
             videoRef.current.srcObject = stream;
             
@@ -295,6 +308,7 @@ const QRCodeGenerator = () => {
             
             setIsScanning(true);
             setIsLoadingCameras(false);
+            setDetectedText('Ready to scan. Point at text.');
             startOCRCapturing();
             
             console.log('Camera started successfully');
@@ -322,13 +336,13 @@ const QRCodeGenerator = () => {
           }
     };
 
-    // 2. Public function to trigger the camera start (Used only for retry/manual re-init now)
+    // 3. Public function to trigger the camera start
     const startCamera = () => {
         setCameraError(''); // Clear error before retry
         setShouldStart(true);
     };
 
-    // 3. Effect hook to wait for the video ref before calling initVideo
+    // 4. Effect hook to wait for the video ref before calling initVideo
     useEffect(() => {
         if (shouldStart && videoRef.current) {
             console.log('Video ref is now available. Initializing video stream...');
@@ -337,7 +351,7 @@ const QRCodeGenerator = () => {
         }
     }, [shouldStart, selectedCamera]); 
     
-    // 4. Effect to pause continuous scanning when a result is found
+    // 5. Effect to pause continuous scanning when a result is found
     useEffect(() => {
         if (scannedResult && captureIntervalRef.current) {
             console.log('QR Code generated. Pausing continuous OCR scanning.');
@@ -360,9 +374,9 @@ const QRCodeGenerator = () => {
         clearInterval(captureIntervalRef.current);
       }
       
-      // Interval set to 3s (3000ms)
+      // Changed interval to 1.5s (1500ms) for faster detection
       captureIntervalRef.current = setInterval(() => {
-        console.log('--- OCR Interval Tick Attempt (3s) ---'); 
+        console.log('--- OCR Interval Tick Attempt (1.5s) ---'); 
         
         if (scannedResult) {
             console.log('Result active, skipping scan tick.');
@@ -400,8 +414,10 @@ const QRCodeGenerator = () => {
       
       try {
         const context = canvas.getContext('2d');
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+        // Scale up the image for better OCR accuracy
+        const scaleFactor = 2; 
+        canvas.width = video.videoWidth * scaleFactor;
+        canvas.height = video.videoHeight * scaleFactor;
         context.drawImage(video, 0, 0, canvas.width, canvas.height);
 
         const { data: { text } } = await workerRef.current.recognize(canvas);
@@ -432,39 +448,67 @@ const QRCodeGenerator = () => {
       }
     };
 
+    // --- Updated OCR Text Processing Logic for correct token prioritization ---
     const processOCRText = (text) => {
-      let cleanedText = text.trim()
-        .replace(/\s+/g, ' ')
-        .toUpperCase();
-      
-      const patterns = [
-        /([A-Z])-(\d+)\s+(\d+)([A-Z])/,
-        /([A-Z])(\d+)\s+(\d+)([A-Z])/,
-        /([A-Z])-(\d+)\.(\d+)([A-Z])/,
-        /([A-Z])(\d+)(\d+)([A-Z])/,
-        /([A-Z])\s+(\d+)\s+(\d+)\s+([A-Z])/
-      ];
-      
-      for (const pattern of patterns) {
-        const match = cleanedText.match(pattern);
-        if (match) {
-          const [, letter, firstNum, secondNum, endingLetter] = match;
-          const result = `${letter}-${firstNum.replace(/-/g, '')}.${secondNum}${endingLetter}`;
-          return result;
+        let cleanedText = text.trim()
+            .replace(/(\r\n|\n|\r)/gm, ' ')
+            .replace(/\s+/g, ' ')
+            .toUpperCase();
+        
+        // --- PRIORITY 1: Check for multi-token pattern (e.g., B-17 1B) FIRST ---
+        // This is necessary to correctly combine fragmented codes like "B-17" and "1B"
+        const fullMatchB17 = cleanedText.match(/([A-Z]-\d+)\s+(\d+[A-Z])/);
+        if (fullMatchB17) {
+            // Returns the standardized format: B-17.1B
+            return `${fullMatchB17[1]}.${fullMatchB17[2]}`; 
         }
-      }
-      
-      const locationPattern = /[A-Z]-?\d+\.?\d*[A-Z]?|STG\.[A-Z]\d{2,3}/;
-      const locationMatch = cleanedText.match(locationPattern);
-      if (locationMatch) {
-        return locationMatch[0];
-      }
-      
-      return null;
+
+        // PRIORITY 2: Tokenize and filter for high-priority single tokens.
+        const tokens = cleanedText.split(/\s+/)
+            // Filter out tokens that are too short (< 3 chars) or known short OCR noise
+            .filter(p => p.length >= 3 && !/LJ|JB|NY|NR|KS|S|E|N|RTS|BIN|SHELF|CART_/.test(p)); 
+
+        console.log('Cleaned OCR Tokens:', tokens);
+
+        // Define single-token patterns
+        const locationPatterns = [
+            /^[A-Z0-9_]+$/, // 1. OBFC_SORTABLE_1 (Alphanumeric with underscores)
+            /^[A-Z]-\d+\.\d+[A-Z]?$/, // 2. S-1.1C (Letter-Number.NumberLetter)
+            /^[A-Z]-\d{1,3}$/, // 3. A-17 (Letter-Number)
+        ];
+        
+        for (const token of tokens) {
+            console.log('Evaluating token:', token);
+            
+            // Match 1: OBFC_SORTABLE_1 
+            if (token.match(locationPatterns[0])) {
+                // Already filtered out "CART_" and "SHELF" in the list above, but redundant check is okay.
+                return token;
+            }
+            
+            // Match 2 & 3: S-1.1C or A-17
+            if (token.match(locationPatterns[1]) || token.match(locationPatterns[2])) {
+                return token;
+            }
+        }
+        
+        // PRIORITY 3: Fallback for short codes (like 'L02')
+        const shortCodeMatch = cleanedText.match(/[A-Z]\d{2,3}/g); // e.g., L02, H150
+        if (shortCodeMatch) {
+            // Use formatInput to try and convert it to STG.L02 format
+            let formattedShortCode = formatInput(shortCodeMatch[0]);
+            if (formattedShortCode.length > 0) {
+                 return formattedShortCode[0];
+            }
+        }
+
+        return null;
     };
+    // --- END Updated OCR Text Processing Logic ---
 
     const handleScannedText = (scannedText) => {
       if (onScanComplete) {
+        // onScanComplete now passes the scanned text and the modal's state setter
         onScanComplete(scannedText, setScannedResult);
       }
     };
@@ -484,14 +528,14 @@ const QRCodeGenerator = () => {
       selectedCameraRef.current = deviceId;
       if (isScanning) {
         stopCamera();
-        // Since we removed the start button, we re-trigger the auto-start sequence
-        setTimeout(() => startCamera(), 500); // startCamera sets setShouldStart(true)
+        // startCamera sets setShouldStart(true), triggering the re-initialization effect
+        setTimeout(() => startCamera(), 500); 
       }
     };
 
     const handleClearResult = () => {
         setScannedResult(null);
-        setDetectedText('');
+        setDetectedText('Ready to scan. Point at text.');
         setLastScannedText('');
         // Restart continuous scanning when result is cleared
         if (isScanning && !captureIntervalRef.current) {
@@ -685,7 +729,7 @@ const QRCodeGenerator = () => {
                     </p>
                   ) : (
                     <p>
-                      ✅ Camera Active • Scanning every 3 seconds
+                      ✅ Camera Active • Scanning every 1.5 seconds
                     </p>
                   )}
                   {detectedText && detectedText !== 'Scanning...' && detectedText !== 'No text detected or recognized.' && (
@@ -1299,25 +1343,37 @@ const QRCodeGenerator = () => {
 
   // Update suggestions when search term changes
   useEffect(() => {
+    if (typingTimeout) {
+      clearTimeout(typingTimeout);
+    }
+
     if (!searchTerm.trim()) {
       setSuggestions([]);
       setShowSuggestions(false);
       return;
     }
+    
+    const timeout = setTimeout(() => {
+        const allLocations = [
+          ...areas.STAGING_AREA,
+          ...areas.STACKING_AREA,
+          ...areas.GENERAL_AREA,
+          ...areas.OTHER_AREA
+        ];
 
-    const allLocations = [
-      ...areas.STAGING_AREA,
-      ...areas.STACKING_AREA,
-      ...areas.GENERAL_AREA,
-      ...areas.OTHER_AREA
-    ];
+        const filtered = allLocations
+          .filter(item => 
+            item.location.toLowerCase().includes(searchTerm.toLowerCase())
+          );
 
-    const filtered = allLocations
-      .filter(item => 
-        item.location.toLowerCase().includes(searchTerm.toLowerCase())
-      );
+        setSuggestions(filtered);
+        setShowSuggestions(filtered.length > 0);
+    }, 250); 
+    
+    setTypingTimeout(timeout);
+    
+    return () => clearTimeout(timeout); 
 
-    setSuggestions(filtered);
   }, [searchTerm, areas]);
 
   // Close suggestions when clicking outside
@@ -1443,7 +1499,7 @@ const QRCodeGenerator = () => {
     setShowSuggestions(false);
   };
 
-  // MODIFIED: Handle text detection from modular camera
+  // Handle text detection from modular camera
   const handleCameraScanComplete = (scannedText, updateModalResult) => {
     setSearchTerm(scannedText); 
 
@@ -1998,7 +2054,7 @@ const QRCodeGenerator = () => {
           margin-bottom: 0.5rem;
         }
         
-        .reference-id {
+.reference-id {
           font-size: 0.85rem;
           color: #7f8c8d;
           word-break: break-all;
