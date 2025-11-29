@@ -31,7 +31,7 @@ const QRCodeGenerator = () => {
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [typingTimeout, setTypingTimeout] = useState(null);
   const [scanHistory, setScanHistory] = useState([]);
-  const [showModularCamera, setShowModularCamera] = useState(false);
+  const [showModularCamera, setShowModularCamera] = useState(false); // Controls modal visibility
 
   const searchInputRef = useRef(null);
   const resultsContainerRef = useRef(null);
@@ -75,12 +75,12 @@ const QRCodeGenerator = () => {
   }, []);
 
   // Modular Camera Component
-  const ModularCamera = ({ onScanComplete, onClose }) => { // Renamed prop
+  const ModularCamera = ({ onScanComplete, onClose }) => { 
     const videoRef = useRef(null);
     const canvasRef = useRef(null);
     const streamRef = useRef(null);
     const captureIntervalRef = useRef(null);
-    const workerRef = useRef(null); // Ref for persistent Tesseract worker
+    const workerRef = useRef(null); 
 
     const [isScanning, setIsScanning] = useState(false);
     const [isProcessing, setIsProcessing] = useState(false);
@@ -93,7 +93,7 @@ const QRCodeGenerator = () => {
     const [detectedText, setDetectedText] = useState('');
     const [shouldStart, setShouldStart] = useState(false); 
     
-    // NEW STATE: Holds the result object to display the QR code
+    // Holds the result object to display the QR code
     const [scannedResult, setScannedResult] = useState(null); 
 
     const camerasRef = useRef([]);
@@ -121,17 +121,26 @@ const QRCodeGenerator = () => {
         setAvailableCameras(camerasList);
         camerasRef.current = camerasList;
         
-        if (camerasList.length > 0 && !selectedCamera) {
-          // Attempt to select the back camera by default
+        if (camerasList.length > 0) {
           const backCamera = camerasList.find(c => c.label.toLowerCase().includes('back') || c.label.toLowerCase().includes('environment')) || camerasList[0];
-          setSelectedCamera(backCamera.deviceId);
-          selectedCameraRef.current = backCamera.deviceId;
+          
+          if (!selectedCamera) {
+              setSelectedCamera(backCamera.deviceId);
+              selectedCameraRef.current = backCamera.deviceId;
+          }
+
+          // *** CHANGE 1: Automatically trigger the start sequence if a camera is available ***
+          setShouldStart(true); 
+          // *** END CHANGE 1 ***
         }
+
         return camerasList;
       } catch (err) {
         console.warn("Could not enumerate cameras, continuing with default access.", err);
         return [];
       } finally {
+        // NOTE: We keep isLoadingCameras as true if camerasList is empty until an error is set
+        // to show a status, but for this component, we set it to false here.
         setIsLoadingCameras(false);
       }
     };
@@ -159,14 +168,14 @@ const QRCodeGenerator = () => {
       }
       
       // Reset all camera related states
-      setShouldStart(false); // Ensure we don't restart accidentally
+      setShouldStart(false); 
       setIsScanning(false);
       setIsProcessing(false);
       setCameraError('');
       setVideoDimensions({ width: 0, height: 0 });
       setLastScannedText('');
       setDetectedText('');
-      setScannedResult(null); // CLEAR RESULT ON STOP
+      setScannedResult(null); 
       
       if (videoRef.current) {
         videoRef.current.srcObject = null;
@@ -175,6 +184,8 @@ const QRCodeGenerator = () => {
     
     // Tesseract Worker Initialization (runs once on mount)
     useEffect(() => {
+      setIsLoadingCameras(true); // Set loading while we detect cameras and worker
+      
       getCameras();
       
       const initializeWorker = async () => {
@@ -196,7 +207,6 @@ const QRCodeGenerator = () => {
       
       initializeWorker();
 
-      // stopCamera is the cleanup function, which now terminates the worker
       return () => stopCamera(); 
     }, []);
 
@@ -204,8 +214,8 @@ const QRCodeGenerator = () => {
     const initVideo = async (cameraDeviceId) => {
         try {
             setCameraError('');
-            setIsLoadingCameras(true);
-            setScannedResult(null); // Clear previous result on start
+            // NOTE: setIsLoadingCameras is kept true until video starts playing or fails
+            setScannedResult(null); 
 
             if (!videoRef.current) {
                 console.error('Video ref not available in initVideo.');
@@ -312,8 +322,9 @@ const QRCodeGenerator = () => {
           }
     };
 
-    // 2. Public function to trigger the camera start
+    // 2. Public function to trigger the camera start (Used only for retry/manual re-init now)
     const startCamera = () => {
+        setCameraError(''); // Clear error before retry
         setShouldStart(true);
     };
 
@@ -326,7 +337,7 @@ const QRCodeGenerator = () => {
         }
     }, [shouldStart, selectedCamera]); 
     
-    // 4. NEW: Effect to pause continuous scanning when a result is found
+    // 4. Effect to pause continuous scanning when a result is found
     useEffect(() => {
         if (scannedResult && captureIntervalRef.current) {
             console.log('QR Code generated. Pausing continuous OCR scanning.');
@@ -334,15 +345,13 @@ const QRCodeGenerator = () => {
             captureIntervalRef.current = null;
         } 
         
-        // This is primarily for cleanup when the component unmounts,
-        // but it prevents memory leaks if interval is running.
         return () => {
              if (captureIntervalRef.current) {
                  clearInterval(captureIntervalRef.current);
                  captureIntervalRef.current = null;
              }
         };
-    }, [scannedResult]); // Only run when scannedResult changes
+    }, [scannedResult]); 
 
     const startOCRCapturing = () => {
       console.log('Starting OCR capturing...');
@@ -351,11 +360,10 @@ const QRCodeGenerator = () => {
         clearInterval(captureIntervalRef.current);
       }
       
-      // Interval set to 1.5s (1500ms) - REQUESTED CHANGE
+      // Interval set to 3s (3000ms)
       captureIntervalRef.current = setInterval(() => {
-        console.log('--- OCR Interval Tick Attempt (1.5s) ---'); 
+        console.log('--- OCR Interval Tick Attempt (3s) ---'); 
         
-        // Skip scanning if a result is already displayed
         if (scannedResult) {
             console.log('Result active, skipping scan tick.');
             return;
@@ -366,7 +374,7 @@ const QRCodeGenerator = () => {
         }
         
         captureAndProcessFrame();
-      }, 1500); // <-- INTERVAL SET TO 1.5 SECONDS
+      }, 3000); 
     };
 
     const captureAndProcessFrame = async () => {
@@ -377,7 +385,6 @@ const QRCodeGenerator = () => {
         return;
       }
 
-      // Important: Stop processing if a result is already shown
       if (scannedResult) {
           console.log('Already displaying result. Aborting frame processing.');
           return;
@@ -414,12 +421,12 @@ const QRCodeGenerator = () => {
           }
         } else {
           setDetectedText('No text detected or recognized.');
-          setScannedResult(null); // Clear QR code if no text is found
+          setScannedResult(null); 
         }
       } catch (err) {
         console.error('OCR processing error:', err);
         setDetectedText('Error processing image');
-        setScannedResult(null); // Clear QR code on error
+        setScannedResult(null); 
       } finally {
         setIsProcessing(false);
       }
@@ -456,21 +463,29 @@ const QRCodeGenerator = () => {
       return null;
     };
 
-    // UPDATED: Pass text and the modal's state setter to the parent
     const handleScannedText = (scannedText) => {
       if (onScanComplete) {
         onScanComplete(scannedText, setScannedResult);
       }
     };
-    
-    // REMOVED: captureManual function
+
+    const captureManual = () => {
+      if (!isScanning || isProcessing || !streamRef.current || scannedResult) {
+        if (scannedResult) {
+            alert("Clear the current result before scanning manually.");
+        }
+        return;
+      }
+      captureAndProcessFrame();
+    };
 
     const switchCamera = async (deviceId) => {
       setSelectedCamera(deviceId);
       selectedCameraRef.current = deviceId;
       if (isScanning) {
         stopCamera();
-        setTimeout(() => setShouldStart(true), 500);
+        // Since we removed the start button, we re-trigger the auto-start sequence
+        setTimeout(() => startCamera(), 500); // startCamera sets setShouldStart(true)
       }
     };
 
@@ -497,7 +512,14 @@ const QRCodeGenerator = () => {
           <div className="camera-header">
             <h3>📷 Live Camera Scanner</h3>
             <div className="camera-controls">
-              {/* REMOVED: Capture Now button */}
+              <button 
+                type="button" 
+                onClick={captureManual}
+                className="capture-button"
+                disabled={isProcessing || !isScanning || scannedResult} 
+              >
+                {isProcessing ? 'Processing...' : '📸 Capture Now'}
+              </button>
               <button 
                 type="button" 
                 onClick={handleClose}
@@ -523,63 +545,58 @@ const QRCodeGenerator = () => {
               {/* Scan Overlay (Only show when actively scanning) */}
               {isScanning && (
                 <div className="scan-overlay">
-                    
-                    {/* CONDITIONAL RENDERING: Show QR code or scanning elements */}
-                    {scannedResult ? (
-                        // NEW BLOCK FOR QR CODE DISPLAY - CENTERING VIA FLEXBOX
-                        <div className="scanned-qr-code-display-fixed">
-                            <h4>✅ Code Found: {scannedResult.location}</h4>
-                            <div className="qr-code-wrapper-modal">
-                                <QRCodeCanvas 
-                                  value={scannedResult.referenceId || 'NO_REF_ID_FOUND'} 
-                                  size={120} // Smaller size for modal
-                                  level="H"
-                                  includeMargin={true}
-                                />
-                            </div>
-                            <div className="qr-code-details-modal">
-                                <div className="location-modal">{scannedResult.location}</div>
-                                <div 
-                                  className="type-modal" 
-                                  style={{ color: getTypeColor(scannedResult.type) }}
-                                >
-                                    {getTypeDisplayName(scannedResult.type)}
-                                </div>
-                                <div className="reference-id-modal">Ref: {scannedResult.referenceId}</div>
-                            </div>
-                            <button 
-                              onClick={handleClearResult} 
-                              className="clear-result-button"
-                            >
-                              Clear Result & Resume Scan
-                            </button>
-                        </div>
-                    ) : (
-                        // SCANNING ELEMENTS (Only visible when no result is found)
-                        <>
-                            <div className="scan-frame">
-                                <div className="scan-corner top-left"></div>
-                                <div className="scan-corner top-right"></div>
-                                <div className="scan-corner bottom-left"></div>
-                                <div className="scan-corner bottom-right"></div>
-                            </div>
-                            <p className="scan-message">Point camera at location text</p>
-                            <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
-                            
-                            {detectedText && (
-                                <div className="detected-text">
-                                    <strong>Detected:</strong> {detectedText}
-                                </div>
-                            )}
-                            
-                            {isProcessing && (
-                                <div className="processing-indicator">
-                                    <div className="spinner"></div>
-                                    Reading text...
-                                </div>
-                            )}
-                        </>
-                    )}
+                  <div className="scan-frame">
+                    <div className="scan-corner top-left"></div>
+                    <div className="scan-corner top-right"></div>
+                    <div className="scan-corner bottom-left"></div>
+                    <div className="scan-corner bottom-right"></div>
+                  </div>
+                  <p className="scan-message">Point camera at location text</p>
+                  <p className="scan-hint">e.g., "B-17 1B" → "B-17.1B"</p>
+                  
+                  {detectedText && (
+                    <div className="detected-text">
+                      <strong>Detected:</strong> {detectedText}
+                    </div>
+                  )}
+                  
+                  {isProcessing && (
+                    <div className="processing-indicator">
+                      <div className="spinner"></div>
+                      Reading text...
+                    </div>
+                  )}
+
+                  {/* Display the QR code if a result is found */}
+                  {scannedResult && (
+                      <div className="scanned-qr-code-display">
+                          <h4>✅ Code Found: {scannedResult.location}</h4>
+                          <div className="qr-code-wrapper-modal">
+                              <QRCodeCanvas 
+                                value={scannedResult.referenceId || 'NO_REF_ID_FOUND'} 
+                                size={120} 
+                                level="H"
+                                includeMargin={true}
+                              />
+                          </div>
+                          <div className="qr-code-details-modal">
+                              <div className="location-modal">{scannedResult.location}</div>
+                              <div 
+                                className="type-modal" 
+                                style={{ color: getTypeColor(scannedResult.type) }}
+                              >
+                                  {getTypeDisplayName(scannedResult.type)}
+                              </div>
+                              <div className="reference-id-modal">Ref: {scannedResult.referenceId}</div>
+                          </div>
+                          <button 
+                            onClick={handleClearResult} 
+                            className="clear-result-button"
+                          >
+                            Clear Result & Resume Scan
+                          </button>
+                      </div>
+                  )}
                 </div>
               )}
             </div>
@@ -587,13 +604,14 @@ const QRCodeGenerator = () => {
             {/* Camera Setup Controls (Visible only when NOT scanning) */}
             {!isScanning && (
                 <div className="camera-setup">
+                    {/* Camera Selection Dropdown */}
                     <div className="camera-selection">
                         <label htmlFor="modular-camera-select">Select Camera:</label>
                         <select 
                           id="modular-camera-select"
                           value={selectedCamera}
                           onChange={(e) => switchCamera(e.target.value)}
-                          disabled={isLoadingCameras}
+                          disabled={isLoadingCameras || availableCameras.length === 0}
                         >
                           {isLoadingCameras ? (
                             <option>Loading cameras...</option>
@@ -609,25 +627,31 @@ const QRCodeGenerator = () => {
                         </select>
                     </div>
                     
-                    {/* The Start Button */}
-                    <button 
-                      type="button" 
-                      onClick={startCamera} // This sets shouldStart(true)
-                      className="start-camera-button"
-                      disabled={isLoadingCameras}
-                    >
-                      {isLoadingCameras ? 'Starting Camera...' : '🚀 Start Continuous Scan'}
-                    </button>
-                    
-                    {/* Retry Button */}
-                    {cameraError && cameraError.includes('not ready') && (
+                    {/* Status Message for Auto-Start */}
+                    {availableCameras.length > 0 && !cameraError && (
+                        <div className="starting-message-status">
+                            <div className="spinner-large"></div>
+                            <p>Camera starting automatically...</p>
+                            <p className="subtle-hint">Please allow permissions if prompted.</p>
+                        </div>
+                    )}
+
+                    {/* Show a dedicated Retry Button if there's an error */}
+                    {cameraError && (
                       <button 
                         type="button" 
-                        onClick={startCamera}
+                        onClick={startCamera} 
                         className="retry-camera-button"
                       >
                         🔄 Retry Starting Camera
                       </button>
+                    )}
+                    
+                    {/* Message if no cameras are found */}
+                    {availableCameras.length === 0 && !isLoadingCameras && !cameraError && (
+                        <div className="no-camera-message-status">
+                            <p>No video input devices found. Check permissions and try again.</p>
+                        </div>
                     )}
                 </div>
             )}
@@ -661,7 +685,7 @@ const QRCodeGenerator = () => {
                     </p>
                   ) : (
                     <p>
-                      ✅ Camera Active • Scanning every 1.5 seconds
+                      ✅ Camera Active • Scanning every 3 seconds
                     </p>
                   )}
                   {detectedText && detectedText !== 'Scanning...' && detectedText !== 'No text detected or recognized.' && (
@@ -680,7 +704,6 @@ const QRCodeGenerator = () => {
             )}
 
           </div> 
-          {/* End camera-content-wrapper */}
           
           {/* Hidden canvas for OCR processing */}
           <canvas 
@@ -736,7 +759,20 @@ const QRCodeGenerator = () => {
             gap: 0.5rem;
           }
 
-          /* Removed .capture-button styles */
+          .capture-button {
+            padding: 0.5rem 1rem;
+            background: #27ae60;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+          }
+
+          .capture-button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+          }
 
           .close-camera-button {
             padding: 0.5rem 1rem;
@@ -776,35 +812,54 @@ const QRCodeGenerator = () => {
             border-radius: 6px;
             font-size: 1rem;
           }
+          
+          /* New Auto-Start Status Message Styles */
+          .starting-message-status {
+              display: flex;
+              flex-direction: column;
+              align-items: center;
+              gap: 0.75rem;
+              padding: 1.5rem;
+              background: #eaf4ff;
+              border: 1px solid #cce5ff;
+              border-radius: 8px;
+              color: #004085;
+              text-align: center;
+          }
+          
+          .no-camera-message-status {
+              padding: 1.5rem;
+              background: #f8d7da;
+              border: 1px solid #f5c6cb;
+              border-radius: 8px;
+              color: #721c24;
+              text-align: center;
+          }
+          
+          .spinner-large { 
+              width: 32px;
+              height: 32px;
+              border: 4px solid transparent;
+              border-top: 4px solid #3498db;
+              border-radius: 50%;
+              animation: spin 1s linear infinite;
+          }
 
-          .start-camera-button {
+          .subtle-hint {
+              font-size: 0.85rem;
+              color: #004085;
+              opacity: 0.8;
+          }
+          /* End New Auto-Start Status Message Styles */
+
+
+          .retry-camera-button {
             padding: 1rem;
-            background: #8e44ad;
+            background: #f39c12;
             color: white;
             border: none;
             border-radius: 8px;
             font-size: 1.1rem;
-            font-weight: 600;
-            cursor: pointer;
-            transition: background 0.3s;
-          }
-
-          .start-camera-button:hover:not(:disabled) {
-            background: #7d3c98;
-          }
-
-          .start-camera-button:disabled {
-            background: #95a5a6;
-            cursor: not-allowed;
-          }
-
-          .retry-camera-button {
-            padding: 0.75rem;
-            background: #f39c12;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-size: 1rem;
             font-weight: 600;
             cursor: pointer;
             transition: background 0.3s;
@@ -838,12 +893,10 @@ const QRCodeGenerator = () => {
             left: 0;
             right: 0;
             bottom: 0;
-            /* CRUCIAL: Center content using flexbox */
             display: flex;
-            flex-direction: column; 
-            justify-content: center; 
-            align-items: center; 
-            
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
             background: transparent;
             color: white;
             text-align: center;
@@ -917,23 +970,25 @@ const QRCodeGenerator = () => {
             pointer-events: auto;
           }
           
-          /* NEW QR CODE DISPLAY STYLES - FIXES */
-          .scanned-qr-code-display-fixed {
-            /* Now centered by the parent .scan-overlay's flex properties */
+          .scanned-qr-code-display {
+            position: absolute; 
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
             
-            background: rgba(255, 255, 255, 1); /* Fully opaque white background for visibility */
+            background: rgba(255, 255, 255, 0.98); 
             padding: 1.5rem;
             border-radius: 12px;
             box-shadow: 0 0 15px rgba(0, 0, 0, 0.5); 
             display: flex;
             flex-direction: column;
             align-items: center;
-            pointer-events: auto; /* Re-enable click on the box */
+            pointer-events: auto;
             max-width: 90%;
-            z-index: 20; /* Ensure it is on top of everything */
+            z-index: 10; 
           }
 
-          .scanned-qr-code-display-fixed h4 {
+          .scanned-qr-code-display h4 {
             color: #2c3e50;
             margin: 0 0 1rem 0;
             font-size: 1.2rem;
@@ -976,7 +1031,6 @@ const QRCodeGenerator = () => {
           .clear-result-button:hover {
               background-color: #e67e22;
           }
-          /* END NEW QR CODE DISPLAY STYLES */
 
           .processing-indicator {
             display: flex;
@@ -1021,8 +1075,8 @@ const QRCodeGenerator = () => {
           }
           
           .scan-paused-message {
-             background: #fcf8e3; /* Light yellow background */
-             color: #8a6d3b; /* Dark yellow/brown text */
+             background: #fcf8e3; 
+             color: #8a6d3b; 
              padding: 0.5rem;
              border-radius: 4px;
           }
@@ -1041,7 +1095,7 @@ const QRCodeGenerator = () => {
           }
 
           .camera-error-message {
-            margin: 1rem;
+            margin: 1rem 0;
             padding: 1rem;
             background: #f8d7da;
             color: #721c24;
@@ -1389,8 +1443,7 @@ const QRCodeGenerator = () => {
     setShowSuggestions(false);
   };
 
-  // UPDATED: Handle text detection from modular camera
-  // This function now also updates the modal's state setter to the parent's component's state
+  // MODIFIED: Handle text detection from modular camera
   const handleCameraScanComplete = (scannedText, updateModalResult) => {
     setSearchTerm(scannedText); 
 
@@ -1425,14 +1478,19 @@ const QRCodeGenerator = () => {
           return [newEntry, ...filteredHistory].slice(0, 10);
         });
         
-        // 2. Update the modular camera's state to show the QR code
-        // This is the key call: it sets the `scannedResult` state in ModularCamera
-        updateModalResult(finalResult);
+        // 2. AUTOMATICALLY CLOSE THE MODAL 
+        setShowModularCamera(false); 
+        
+        // 3. Clear the modular camera's result state (cleanup is good practice)
+        updateModalResult(null); 
+        
+        // Scroll to results on the main page
+        setTimeout(() => resultsContainerRef.current?.scrollIntoView({ behavior: 'smooth' }), 200);
 
     } else {
         // Clear search results and modal result if not found
         setResults([]);
-        // This is the key call: it sets the `scannedResult` state to null in ModularCamera (Hiding the QR code)
+        // Update the modular camera's state to show no result
         updateModalResult(null);
     }
   };
@@ -1456,15 +1514,16 @@ const QRCodeGenerator = () => {
     <div className="qr-generator-container">
       <header className="qr-generator-header">
         <h1>DFX3 Station Codes</h1>
-        <p>Updated on 4/20/25 (by mvvlasc)</p>
+        <p>Updated on 11/28/25 (by mvvlasc)</p>
         <QuickLinksDropdown />
         
         {/* Button to open modular camera */}
         <button 
           className="open-modular-camera-button"
           onClick={() => setShowModularCamera(true)}
+          disabled={!cameraSupported}
         >
-          Camera Text Scanner
+          {cameraSupported ? 'Camera Text Scanner' : 'Camera Not Supported'}
         </button>
       </header>
 
@@ -1632,9 +1691,16 @@ const QRCodeGenerator = () => {
           box-shadow: 0 4px 15px rgba(0, 0, 0, 0.2);
         }
 
-        .open-modular-camera-button:hover {
+        .open-modular-camera-button:hover:not(:disabled) {
           transform: translateY(-2px);
           box-shadow: 0 6px 20px rgba(0, 0, 0, 0.3);
+        }
+        
+        .open-modular-camera-button:disabled {
+            background: #95a5a6;
+            cursor: not-allowed;
+            opacity: 0.8;
+            box-shadow: none;
         }
 
         /* Quick Links Styles */
